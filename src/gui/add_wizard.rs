@@ -114,24 +114,31 @@ impl AddWizard {
 			let loading = self.loading;
 			let btn = ui.add_enabled(!loading, egui::Button::new("获取 Releases"));
 			if btn.clicked() && !self.repo_url.is_empty() {
-				self.loading = true;
-				self.error = None;
-				let url = self.repo_url.clone();
-				let fetch_result = self.fetch_result.clone();
-				let ctx = ctx.clone();
+				// 去除首尾空格和换行，并更新字段（用户可见）
+				let trimmed = self.repo_url.trim().to_string();
+				self.repo_url = trimmed;
 
-				tokio::spawn(async move {
-					let client = GitHubClient::new(None); // TODO: 从设置读取 token
-					let result = if let Some((owner, repo)) = GitHubClient::parse_repo_url(&url) {
-						client.fetch_releases(&owner, &repo).await
-							.map_err(|e| e.to_string())
-					} else {
-						Err("无效的 GitHub 链接".to_string())
-					};
-					
-					*fetch_result.lock().unwrap() = Some(result);
-					ctx.request_repaint(); // 通知 UI 更新
-				});
+				if let Some((owner, repo)) = GitHubClient::parse_repo_url(&self.repo_url) {
+					// 保存到结构体，供后续步骤使用
+					self.owner = owner.clone();
+					self.repo = repo.clone();
+					self.loading = true;
+					self.error = None;
+
+					let fetch_result = self.fetch_result.clone();
+					let ctx = ctx.clone();
+
+					tokio::spawn(async move {
+						let client = GitHubClient::new(None); // TODO: 从设置读取 token
+						let result = client.fetch_releases(&owner, &repo).await
+							.map_err(|e| e.to_string());
+
+						*fetch_result.lock().unwrap() = Some(result);
+						ctx.request_repaint();
+					});
+				} else {
+					self.error = Some("无效的 GitHub 链接".to_string());
+				}
 			}
 
 			if loading {
@@ -264,7 +271,7 @@ impl AddWizard {
 		// 下面显示一些只读信息，提醒用户当前选择的版本和资产
 		ui.horizontal(|ui| {
 			ui.label("GitHub 仓库:");
-			ui.label(format!("{}/{}", self.owner, self.repo));
+			ui.label(&self.repo_url);
 		});
 		ui.horizontal(|ui| {
 			ui.label("当前版本:");

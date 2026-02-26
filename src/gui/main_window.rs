@@ -43,7 +43,6 @@ pub struct MainWindow {
     show_update_toast: bool,
     update_messages: Vec<String>,
 	first_frame: bool,
-	checking_count: u32,
 }
 
 impl MainWindow {
@@ -85,7 +84,6 @@ impl MainWindow {
 			show_update_toast: false,
 			update_messages: Vec::new(),
 			first_frame: true,
-			checking_count:0,
         }
     }
 
@@ -557,7 +555,7 @@ impl eframe::App for MainWindow {
 		}
 
 		if self.show_update_toast && !self.update_messages.is_empty() {
-			egui::Window::new("更新结果")
+			egui::Window::new("检查更新结果")
 				.collapsible(false)
 				.resizable(false)
 				.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -571,6 +569,18 @@ impl eframe::App for MainWindow {
 							self.update_messages.clear();
 						}
 					});
+				});
+		}
+
+		// 正在检查弹窗
+		if self.check_all_in_progress || !self.check_single_in_progress.is_empty() {
+			egui::Window::new("正在检查")
+				.collapsible(false)
+				.resizable(false)
+				.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+				.show(ctx, |ui| {
+					ui.label("正在检查更新，请稍候...");
+					ui.spinner();
 				});
 		}
     }

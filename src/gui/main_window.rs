@@ -1,24 +1,29 @@
 use eframe::egui;
-use crate::app::model::SoftwareEntry;
+use crate::app::model::{SoftwareEntry, TagGroup};
 use crate::app::db;
-use crate::gui::add_wizard::AddWizard;
 use crate::gui::edit_dialog::EditDialog;
+use crate::gui::add_wizard::AddWizard;
 use crate::gui::settings_window::SettingsWindow;
+use crate::gui::tag_group_manager::TagGroupManager;
 use rusqlite::Connection;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
 
 pub struct MainWindow {
     entries: Vec<SoftwareEntry>,
     filter_text: String,
-    selected_tag: Option<String>,
+    selected_tags: HashSet<String>,      // 多选标签
     all_tags: Vec<String>,
+    tag_groups: Vec<TagGroup>,            // 所有标签组
     show_add_wizard: bool,
     add_wizard: Option<AddWizard>,
     edit_dialog: Option<EditDialog>,
     settings_window: Option<SettingsWindow>,
-    conn: Arc<Mutex<Connection>>, // 数据库连接，跨线程共享
-	show_delete_confirm: bool,
+    show_tag_group_manager: bool,
+    tag_group_manager: Option<TagGroupManager>,
+    conn: Arc<Mutex<Connection>>,
+    // 删除确认相关
+    show_delete_confirm: bool,
     pending_delete_id: Option<i64>,
     pending_delete_name: String,
 }
@@ -26,27 +31,30 @@ pub struct MainWindow {
 impl MainWindow {
     pub fn new(conn: Connection) -> Self {
         let conn = Arc::new(Mutex::new(conn));
-        // 初始加载数据
         let entries = Self::load_entries(&conn);
         let all_tags = Self::extract_all_tags(&entries);
+        let tag_groups = Self::load_tag_groups(&conn);
         Self {
             entries,
             filter_text: String::new(),
-            selected_tag: None,
+            selected_tags: HashSet::new(),
             all_tags,
+            tag_groups,
             show_add_wizard: false,
             add_wizard: None,
             edit_dialog: None,
             settings_window: None,
+            show_tag_group_manager: false,
+            tag_group_manager: None,
             conn,
-			show_delete_confirm: false,
-			pending_delete_id: None,
-			pending_delete_name: String::new(),
+            show_delete_confirm: false,
+            pending_delete_id: None,
+            pending_delete_name: String::new(),
         }
     }
 
     fn load_entries(conn: &Arc<Mutex<Connection>>) -> Vec<SoftwareEntry> {
-        if let Ok(conn) = conn.try_lock() {
+        if let Ok(conn) = conn.lock() {
             db::get_all_software(&conn).unwrap_or_default()
         } else {
             vec![]
@@ -63,17 +71,29 @@ impl MainWindow {
         tags
     }
 
+    fn load_tag_groups(conn: &Arc<Mutex<Connection>>) -> Vec<TagGroup> {
+        if let Ok(conn) = conn.lock() {
+            db::get_all_tag_groups(&conn).unwrap_or_default()
+        } else {
+            vec![]
+        }
+    }
+
     fn filtered_entries(&self) -> Vec<&SoftwareEntry> {
         self.entries
             .iter()
             .filter(|e| {
                 let text_match = self.filter_text.is_empty()
                     || e.name.to_lowercase().contains(&self.filter_text.to_lowercase())
+                    || e.alias.to_lowercase().contains(&self.filter_text.to_lowercase())
                     || e.notes.to_lowercase().contains(&self.filter_text.to_lowercase())
                     || e.tags.iter().any(|t| t.to_lowercase().contains(&self.filter_text.to_lowercase()));
-                let tag_match = self.selected_tag.is_none()
-                    || e.tags.contains(self.selected_tag.as_ref().unwrap());
-                text_match && tag_match
+                if self.selected_tags.is_empty() {
+                    text_match
+                } else {
+                    // 条目必须包含至少一个选中的标签
+                    text_match && e.tags.iter().any(|t| self.selected_tags.contains(t))
+                }
             })
             .collect()
     }
@@ -85,14 +105,13 @@ impl eframe::App for MainWindow {
         if self.show_add_wizard {
             let mut wizard = self.add_wizard.take().unwrap_or_else(AddWizard::new);
             if let Some(entry) = wizard.ui(ctx) {
-                // 保存到数据库
-                if let Ok(conn) = self.conn.try_lock() {
+                if let Ok(conn) = self.conn.lock() {
                     let _ = db::insert_software(&conn, &entry);
                 }
-                // 刷新列表
                 self.entries = Self::load_entries(&self.conn);
                 self.all_tags = Self::extract_all_tags(&self.entries);
                 self.show_add_wizard = false;
+                ctx.request_repaint();
             } else {
                 self.add_wizard = Some(wizard);
             }
@@ -101,21 +120,20 @@ impl eframe::App for MainWindow {
         // 处理编辑对话框
         if let Some(dialog) = &mut self.edit_dialog {
             if let Some(updated) = dialog.ui(ctx) {
-                if let Ok(conn) = self.conn.try_lock() {
+                if let Ok(conn) = self.conn.lock() {
                     let _ = db::update_software(&conn, &updated);
                 }
-                // 刷新列表
                 self.entries = Self::load_entries(&self.conn);
                 self.all_tags = Self::extract_all_tags(&self.entries);
                 self.edit_dialog = None;
+                ctx.request_repaint();
             }
         }
 
         // 处理设置窗口
         if let Some(window) = &mut self.settings_window {
             if let Some(settings) = window.ui(ctx) {
-                // 保存设置到数据库
-                if let Ok(conn) = self.conn.try_lock() {
+                if let Ok(conn) = self.conn.lock() {
                     let _ = db::save_setting(&conn, "github_token", settings.github_token.as_deref().unwrap_or(""));
                     let _ = db::save_setting(&conn, "auto_check_interval", &settings.auto_check_interval_hours.to_string());
                     let _ = db::save_setting(&conn, "download_dir", settings.download_dir.as_deref().unwrap_or(""));
@@ -124,7 +142,50 @@ impl eframe::App for MainWindow {
             }
         }
 
-        // 主界面
+        // 处理标签组管理器
+        if self.show_tag_group_manager {
+            let mut manager = self.tag_group_manager.take().unwrap_or_else(|| TagGroupManager::new(self.conn.clone()));
+            if let Some(groups) = manager.ui(ctx) {
+                self.tag_groups = groups;
+                self.show_tag_group_manager = false;
+                ctx.request_repaint();
+            } else {
+                self.tag_group_manager = Some(manager);
+            }
+        }
+
+        // 删除确认弹窗
+        if self.show_delete_confirm {
+            egui::Window::new("确认删除")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("确定要删除 \"{}\" 吗？此操作不可撤销。", self.pending_delete_name));
+                    ui.horizontal(|ui| {
+                        if ui.button("确认").clicked() {
+                            if let Some(id) = self.pending_delete_id {
+                                if let Ok(conn) = self.conn.lock() {
+                                    let _ = db::delete_software(&conn, id);
+                                }
+                                self.entries = Self::load_entries(&self.conn);
+                                self.all_tags = Self::extract_all_tags(&self.entries);
+                                self.show_delete_confirm = false;
+                                self.pending_delete_id = None;
+                                self.pending_delete_name.clear();
+                                ctx.request_repaint();
+                            }
+                        }
+                        if ui.button("取消").clicked() {
+                            self.show_delete_confirm = false;
+                            self.pending_delete_id = None;
+                            self.pending_delete_name.clear();
+                        }
+                    });
+                });
+        }
+
+        // 顶部菜单栏
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("➕ 添加软件").clicked() {
@@ -132,36 +193,79 @@ impl eframe::App for MainWindow {
                     self.add_wizard = Some(AddWizard::new());
                 }
                 if ui.button("⚙️ 设置").clicked() {
-                    // 从数据库加载当前设置
-                    let settings = if let Ok(conn) = self.conn.try_lock() {
+                    let settings = if let Ok(conn) = self.conn.lock() {
                         crate::app::model::Settings::load_from_db(&conn).unwrap_or_default()
                     } else {
                         Default::default()
                     };
                     self.settings_window = Some(SettingsWindow::new(settings));
                 }
+                if ui.button("🏷️ 标签组").clicked() {
+                    self.show_tag_group_manager = true;
+                }
                 if ui.button("🔄 检查更新").clicked() {
-                    // 触发更新检查（异步）
+                    // TODO: 触发批量更新
                 }
             });
         });
 
-        egui::SidePanel::left("tag_panel").show(ctx, |ui| {
-            ui.heading("标签分类");
-            ui.add_space(5.0);
-            if ui.button("全部").clicked() {
-                self.selected_tag = None;
-            }
-            for tag in &self.all_tags {
-                let mut selected = self.selected_tag.as_ref() == Some(tag);
-                if ui.checkbox(&mut selected, tag).changed() && selected {
-                    self.selected_tag = Some(tag.clone());
-                } else if !selected && self.selected_tag.as_ref() == Some(tag) {
-                    self.selected_tag = None;
-                }
-            }
-        });
+		// 左侧标签面板
+		egui::SidePanel::left("tag_panel").show(ctx, |ui| {
+			ui.heading("标签分类");
+			ui.add_space(5.0);
+			ui.horizontal(|ui| {
+				if ui.button("清除所有").clicked() {
+					self.selected_tags.clear();
+				}
+			});
+			ui.separator();
 
+			// 标签组区域
+			if !self.tag_groups.is_empty() {
+				ui.label("标签组:");
+				for group in &self.tag_groups {
+					ui.horizontal(|ui| {
+						// 将组标签转换为 HashSet 进行集合比较（忽略顺序）
+						let group_tags: std::collections::HashSet<String> = group.tags.iter().cloned().collect();
+						let selected_tags = &self.selected_tags;
+						let is_selected_group = selected_tags == &group_tags;
+
+						// 显示组名，如果完全匹配则加勾选标记
+						if is_selected_group {
+							ui.label(format!("{} ✔", group.name));
+						} else {
+							ui.label(&group.name);
+						}
+
+						if ui.button("应用").clicked() {
+							// 清除当前选中，然后应用该组所有标签
+							self.selected_tags.clear();
+							for tag in &group.tags {
+								self.selected_tags.insert(tag.clone());
+							}
+						}
+					});
+				}
+				ui.separator();
+			}
+
+			// 多选标签（保持不变）
+			ui.label("标签:");
+			egui::ScrollArea::vertical().show(ui, |ui| {
+				for tag in &self.all_tags {
+					let mut selected = self.selected_tags.contains(tag);
+					if ui.checkbox(&mut selected, tag).changed() {
+						if selected {
+							self.selected_tags.insert(tag.clone());
+						} else {
+							self.selected_tags.remove(tag);
+						}
+					}
+				}
+			});
+		});
+
+        // 中央主面板
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("🔍 搜索:");
@@ -172,115 +276,79 @@ impl eframe::App for MainWindow {
             });
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-				let entries: Vec<SoftwareEntry> = self.filtered_entries().into_iter().cloned().collect();
-				for entry in entries {
-					ui.group(|ui| {
-						ui.set_width(ui.available_width());
-						
-						// 第一行：名称（带别名逻辑）+ 版本信息 + 操作按钮
-						ui.horizontal(|ui| {
-							// 名称显示：若有别名则显示 "别名 (名称)"，否则只显示名称
-							if !entry.alias.is_empty() {
-								ui.heading(&entry.alias);
-								ui.colored_label(egui::Color32::GRAY, format!("({})", entry.name));
-							} else {
-								ui.heading(&entry.name);
-							}
+                let entries: Vec<SoftwareEntry> = self.filtered_entries().into_iter().cloned().collect();
+                for entry in entries {
+                    ui.group(|ui| {
+                        ui.set_width(ui.available_width());
 
-							// 版本信息紧跟名称
-							ui.label(format!("当前: {}", entry.current_version));
-							if let Some(latest) = &entry.latest_version {
-								ui.label(format!("最新: {}", latest));
-								if latest != &entry.current_version {
-									ui.colored_label(egui::Color32::from_rgb(255, 180, 80), "有新版本!");
-								}
-							}
+                        // 第一行：名称（带别名逻辑）+ 版本信息 + 操作按钮
+                        ui.horizontal(|ui| {
+                            if !entry.alias.is_empty() {
+                                ui.heading(&entry.alias);
+                                ui.colored_label(egui::Color32::GRAY, format!("({})", entry.name));
+                            } else {
+                                ui.heading(&entry.name);
+                            }
 
-							// 操作按钮右对齐
-							ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-								// 删除按钮
-								if ui.button("🗑️ 删除").clicked() {
-									if let Some(id) = entry.id {
-										self.pending_delete_id = Some(id);
-										self.pending_delete_name = if !entry.alias.is_empty() {
-											format!("{} ({})", entry.alias, entry.name)
-										} else {
-											entry.name.clone()
-										};
-										self.show_delete_confirm = true;
-									}
-								}
-								if ui.button("✏️ 编辑").clicked() {
-									self.edit_dialog = Some(EditDialog::new(entry.clone()));
-								}
-								if ui.button("🌐 仓库").clicked() {
-									let _ = open::that(&entry.repo_url);
-								}
-								if ui.button("▶ 打开").clicked() {
-									if let Some(path) = &entry.executable_path {
-										let _ = open::that(path);
-									}
-								}
-								if ui.button("🔄 更新").clicked() {
-									// TODO: 触发单个软件的更新
-								}
-							});
-						});
-						
-						// 第二行：安装路径（可打开）+ 标签右对齐
-						ui.horizontal(|ui| {
-							if let Some(path) = &entry.install_path {
-								ui.label("📁 ");
-								if ui.link(path).clicked() {
-									let _ = open::that(path);
-								}
-							}
-							ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-								if !entry.tags.is_empty() {
-									ui.label(format!("🏷️ {}", entry.tags.join(", ")));
-								}
-							});
-						});
-						
-						// 第三行：备注
-						if !entry.notes.is_empty() {
-							ui.label(format!("📝 {}", entry.notes));
-						}
-					});
-				};
-			});	
+                            ui.label(format!("当前: {}", entry.current_version));
+                            if let Some(latest) = &entry.latest_version {
+                                ui.label(format!("最新: {}", latest));
+                                if latest != &entry.current_version {
+                                    ui.colored_label(egui::Color32::from_rgb(255, 180, 80), "有新版本!");
+                                }
+                            }
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("🗑️ 删除").clicked() {
+                                    if let Some(id) = entry.id {
+                                        self.pending_delete_id = Some(id);
+                                        self.pending_delete_name = if !entry.alias.is_empty() {
+                                            format!("{} ({})", entry.alias, entry.name)
+                                        } else {
+                                            entry.name.clone()
+                                        };
+                                        self.show_delete_confirm = true;
+                                    }
+                                }
+                                if ui.button("✏️ 编辑").clicked() {
+                                    self.edit_dialog = Some(EditDialog::new(entry.clone()));
+                                }
+                                if ui.button("🌐 仓库").clicked() {
+                                    let _ = open::that(&entry.repo_url);
+                                }
+                                if ui.button("▶ 打开").clicked() {
+                                    if let Some(path) = &entry.executable_path {
+                                        let _ = open::that(path);
+                                    }
+                                }
+                                if ui.button("🔄 更新").clicked() {
+                                    // TODO: 单个更新
+                                }
+                            });
+                        });
+
+                        // 第二行：安装路径（可打开）+ 标签右对齐
+                        ui.horizontal(|ui| {
+                            if let Some(path) = &entry.install_path {
+                                ui.label("📁 ");
+                                if ui.link(path).clicked() {
+                                    let _ = open::that(path);
+                                }
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if !entry.tags.is_empty() {
+                                    ui.label(format!("🏷️ {}", entry.tags.join(", ")));
+                                }
+                            });
+                        });
+
+                        // 第三行：备注
+                        if !entry.notes.is_empty() {
+                            ui.label(format!("📝 {}", entry.notes));
+                        }
+                    });
+                }
+            });
         });
-
-		// 删除确认弹窗
-		if self.show_delete_confirm {
-			egui::Window::new("确认删除")
-				.collapsible(false)
-				.resizable(false)
-				.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-				.show(ctx, |ui| {
-					ui.label(format!("确定要删除 \"{}\" 吗？此操作不可撤销。", self.pending_delete_name));
-					ui.horizontal(|ui| {
-						if ui.button("确认").clicked() {
-							if let Some(id) = self.pending_delete_id {
-								if let Ok(conn) = self.conn.try_lock() {
-									let _ = crate::app::db::delete_software(&conn, id);
-								}
-								// 刷新列表
-								self.entries = Self::load_entries(&self.conn);
-								self.all_tags = Self::extract_all_tags(&self.entries);
-								self.show_delete_confirm = false;
-								self.pending_delete_id = None;
-								self.pending_delete_name.clear();
-								ctx.request_repaint();
-							}
-						}
-						if ui.button("取消").clicked() {
-							self.show_delete_confirm = false;
-							self.pending_delete_id = None;
-							self.pending_delete_name.clear();
-						}
-					});
-				});
-		}
     }
 }

@@ -54,3 +54,10 @@ impl Settings {
         })
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagGroup {
+    pub id: Option<i64>,
+    pub name: String,
+    pub tags: Vec<String>,
+}

@@ -3,6 +3,7 @@ use rusqlite::types::Value;
 use crate::app::model::SoftwareEntry;
 use chrono::{DateTime, Local};
 use serde_json;
+use crate::app::model::TagGroup;
 
 // 所有字段名（用于 SELECT）
 const ALL_FIELDS: &[&str] = &[
@@ -130,6 +131,16 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
 
+    // 新建 tag_groups 表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tag_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            tags TEXT NOT NULL  -- JSON 数组
+        )",
+        [],
+    )?;
+
     Ok(conn)
 }
 
@@ -196,4 +207,54 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?")?;
     let result = stmt.query_row([key], |row| row.get(0)).optional()?;
     Ok(result)
+}
+
+// 获取所有标签组
+pub fn get_all_tag_groups(conn: &Connection) -> Result<Vec<TagGroup>> {
+    let mut stmt = conn.prepare("SELECT id, name, tags FROM tag_groups ORDER BY name")?;
+    let rows = stmt.query_map([], |row| {
+        let tags_json: String = row.get(2)?;
+        let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+        Ok(TagGroup {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            tags,
+        })
+    })?;
+    let mut groups = Vec::new();
+    for row in rows {
+        groups.push(row?);
+    }
+    Ok(groups)
+}
+
+// 保存标签组（插入或更新）
+pub fn save_tag_group(conn: &Connection, group: &TagGroup) -> Result<i64> {
+    if let Some(id) = group.id {
+        // 更新
+        conn.execute(
+            "UPDATE tag_groups SET name = ?1, tags = ?2 WHERE id = ?3",
+            params![
+                group.name,
+                serde_json::to_string(&group.tags).unwrap_or_else(|_| "[]".to_string()),
+                id
+            ],
+        )?;
+        Ok(id)
+    } else {
+        // 插入
+        conn.execute(
+            "INSERT INTO tag_groups (name, tags) VALUES (?1, ?2)",
+            params![
+                group.name,
+                serde_json::to_string(&group.tags).unwrap_or_else(|_| "[]".to_string())
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+}
+
+// 删除标签组
+pub fn delete_tag_group(conn: &Connection, id: i64) -> Result<usize> {
+    conn.execute("DELETE FROM tag_groups WHERE id = ?", [id])
 }

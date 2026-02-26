@@ -2,7 +2,7 @@ use eframe::egui;
 use crate::app::github::GitHubClient;
 use crate::app::platform::{filter_assets_for_windows, score_asset_for_windows};
 use crate::app::model::SoftwareEntry;
-use crate::utils::path::{find_exe_files, guess_main_exe};
+use crate::utils::path::guess_main_exe;
 use chrono::Local;
 use rfd::FileDialog;
 use std::sync::{Arc, Mutex};
@@ -15,10 +15,13 @@ pub struct AddWizard {
     releases: Vec<crate::app::github::Release>,
     selected_release_index: usize,
     selected_asset_index: usize,
-	current_download_url: String,
-    // 填写信息
-    name: String,
-	alias: String, 
+    current_download_url: String,
+    // 可编辑字段（第三步）
+    software_name: String,     // 软件名称（原名）
+    alias: String,             // 显示别名
+    current_version: String,   // 当前版本
+    latest_version: String,    // 最新版本（可手动输入或自动检测后填充）
+    asset_name: String,        // 软件包名称
     install_path: String,
     executable_path: String,
     notes: String,
@@ -27,6 +30,10 @@ pub struct AddWizard {
     loading: bool,
     error: Option<String>,
     fetch_result: Arc<Mutex<Option<Result<Vec<crate::app::github::Release>, String>>>>,
+    // 关闭标志
+    closed: bool,
+	show_error_dialog: bool,
+    error_message: String,
 }
 
 impl AddWizard {
@@ -39,9 +46,12 @@ impl AddWizard {
             releases: Vec::new(),
             selected_release_index: 0,
             selected_asset_index: 0,
-			current_download_url: String::new(),
-            name: String::new(),
+            current_download_url: String::new(),
+            software_name: String::new(),
             alias: String::new(),
+            current_version: String::new(),
+            latest_version: String::new(),
+            asset_name: String::new(),
             install_path: String::new(),
             executable_path: String::new(),
             notes: String::new(),
@@ -49,36 +59,52 @@ impl AddWizard {
             loading: false,
             error: None,
             fetch_result: Arc::new(Mutex::new(None)),
+            closed: false,
+			show_error_dialog: false,
+			error_message: String::new(),
         }
     }
 
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<SoftwareEntry> {
+        if self.closed {
+            return None;
+        }
+
         let mut result = None;
         egui::Window::new("添加软件")
-			.resizable(true)          // 允许调整大小
-			.movable(true)             // 允许移动
-			.min_width(400.0)          // 最小宽度
-			.min_height(300.0)         // 最小高度
-			.max_width(f32::INFINITY)  // 无最大宽度
-			.max_height(f32::INFINITY) // 无最大高度
-			.default_width(500.0)      // 默认宽度
-			.default_height(400.0)     // 默认高度
+            .resizable(true)
+            .movable(true)
+            .min_width(450.0)
+            .min_height(350.0)
+            .max_width(f32::INFINITY)
+            .max_height(f32::INFINITY)
+            .default_width(500.0)
+            .default_height(400.0)
             .show(ctx, |ui| {
-                ui.heading(match self.step {
-                    0 => "步骤1: 输入GitHub链接",
-                    1 => "步骤2: 选择版本与安装包",
-                    2 => "步骤3: 填写本地信息",
-                    _ => "",
+                // 顶部标题（当前步骤）
+                ui.horizontal(|ui| {
+                    ui.heading(match self.step {
+                        0 => "步骤1: 输入 GitHub 链接",
+                        1 => "步骤2: 选择版本与安装包",
+                        2 => "步骤3: 填写本地信息",
+                        _ => "",
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("❌ 关闭").clicked() {
+                            self.closed = true;
+                        }
+                    });
                 });
+                ui.separator();
 
-                // 检查异步任务是否完成
+                // 检查异步任务结果
                 if let Ok(mut guard) = self.fetch_result.try_lock() {
                     if let Some(fetch_result) = guard.take() {
                         self.loading = false;
                         match fetch_result {
                             Ok(releases) => {
                                 if releases.is_empty() {
-                                    self.error = Some("该仓库没有 releases".to_string());
+                                    self.error = Some("该仓库没有发布版本".to_string());
                                 } else {
                                     self.releases = releases;
                                     self.step = 1;
@@ -103,189 +129,222 @@ impl AddWizard {
                     _ => {}
                 }
             });
-        result
-    }
 
-	fn step0_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-		ui.label("GitHub 仓库链接 (例如: https://github.com/owner/repo):");
-		ui.text_edit_singleline(&mut self.repo_url);
-
-		ui.horizontal(|ui| {
-			let loading = self.loading;
-			let btn = ui.add_enabled(!loading, egui::Button::new("获取 Releases"));
-			if btn.clicked() && !self.repo_url.is_empty() {
-				// 去除首尾空格和换行，并更新字段（用户可见）
-				let trimmed = self.repo_url.trim().to_string();
-				self.repo_url = trimmed;
-
-				if let Some((owner, repo)) = GitHubClient::parse_repo_url(&self.repo_url) {
-					// 保存到结构体，供后续步骤使用
-					self.owner = owner.clone();
-					self.repo = repo.clone();
-					self.loading = true;
-					self.error = None;
-
-					let fetch_result = self.fetch_result.clone();
-					let ctx = ctx.clone();
-
-					tokio::spawn(async move {
-						let client = GitHubClient::new(None); // TODO: 从设置读取 token
-						let result = client.fetch_releases(&owner, &repo).await
-							.map_err(|e| e.to_string());
-
-						*fetch_result.lock().unwrap() = Some(result);
-						ctx.request_repaint();
-					});
-				} else {
-					self.error = Some("无效的 GitHub 链接".to_string());
-				}
-			}
-
-			if loading {
-				ui.spinner();
-			}
-		});
-	}
-
-	fn step1_ui(&mut self, ui: &mut egui::Ui) {
-		if self.releases.is_empty() {
-			ui.label("没有找到 releases，请返回上一步检查链接。");
-			if ui.button("上一步").clicked() {
-				self.step = 0;
-			}
-			return;
-		}
-
-		// 确保选中的版本有效
-		if self.selected_release_index >= self.releases.len() {
-			self.selected_release_index = 0;
-		}
-		let release = &self.releases[self.selected_release_index];
-
-		// 选择版本
-		ui.label("选择版本:");
-		egui::ComboBox::from_label("版本")
-			.selected_text(&release.tag_name)
-			.show_ui(ui, |ui| {
-				for (i, rel) in self.releases.iter().enumerate() {
-					ui.selectable_value(&mut self.selected_release_index, i, &rel.tag_name);
-				}
-			});
-
-		ui.label("选择安装包 (⭐ 为推荐匹配 Windows 的资产):");
-
-		// 计算过滤后的资产索引（按推荐度排序）
-		let scored_indices = crate::app::platform::filter_assets_for_windows(&release.assets);
-
-		if scored_indices.is_empty() {
-			ui.colored_label(egui::Color32::YELLOW, "未找到匹配 Windows 的资产，请手动检查。");
-		}
-
-		// 确定默认选中的资产索引：优先推荐列表的第一个
-		if !release.assets.is_empty() {
-			if !scored_indices.is_empty() {
-				// 如果当前选中的索引不在推荐列表中，则设为推荐列表的第一个
-				let is_current_recommended = scored_indices.iter().any(|(idx, _)| *idx == self.selected_asset_index);
-				if !is_current_recommended {
-					self.selected_asset_index = scored_indices[0].0;
-				}
-			} else {
-				// 无推荐时，确保索引在有效范围内
-				if self.selected_asset_index >= release.assets.len() {
-					self.selected_asset_index = 0;
-				}
-			}
-			// 更新下载链接
-			self.current_download_url = release.assets[self.selected_asset_index].browser_download_url.clone();
-		} else {
-			self.selected_asset_index = 0;
-			self.current_download_url.clear();
-		}
-
-		// 显示资产列表（只显示过滤后的，但可点击选择）
-		egui::ScrollArea::vertical().show(ui, |ui| {
-			for (original_index, _) in &scored_indices {
-				let asset = &release.assets[*original_index];
-				let lower_name = asset.name.to_lowercase();
-				let is_x64 = lower_name.contains("x86_64") || lower_name.contains("amd64") || lower_name.contains("x64");
-				let text = if is_x64 {
-					format!("{} ⭐", asset.name)
-				} else {
-					asset.name.clone()
-				};
-				if ui.radio(self.selected_asset_index == *original_index, text).clicked() {
-					self.selected_asset_index = *original_index;
-					self.current_download_url = asset.browser_download_url.clone();
-				}
-			}
-		});
-
-		// 显示当前选中资产的下载链接
-		if !scored_indices.is_empty() && self.selected_asset_index < release.assets.len() {
-			ui.add_space(10.0);
-			ui.horizontal(|ui| {
-				ui.label("下载链接:");
-				ui.vertical(|ui| {
-					let mut url_display = self.current_download_url.clone();
-					ui.add_sized([ui.available_width() - 100.0, 60.0], 
-						egui::TextEdit::multiline(&mut url_display)
-							.desired_rows(3)
-							.interactive(false)
-					);
+		// 错误弹窗（独立于向导窗口）
+		if self.show_error_dialog {
+			egui::Window::new("错误")
+				.collapsible(false)
+				.resizable(false)
+				.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+				.show(ctx, |ui| {
+					ui.label(&self.error_message);
 					ui.horizontal(|ui| {
-						if ui.button("📋 复制").clicked() {
-							ui.ctx().copy_text(self.current_download_url.clone());
-						}
-						if ui.button("🌐 打开").clicked() {
-							let url = self.current_download_url.clone();
-							std::thread::spawn(move || {
-								let _ = open::that(url);
-							});
+						if ui.button("确定").clicked() {
+							self.show_error_dialog = false;
 						}
 					});
 				});
-			});
-			ui.label("提示：下载安装完成后，点击下一步填写本地信息。");
 		}
 
-		ui.horizontal(|ui| {
-			if ui.button("上一步").clicked() {
-				self.step = 0;
-			}
-			if ui.button("下一步").clicked() {
-				// 预填充名称
-				if self.name.is_empty() {
-					self.name = self.repo.clone();
-				}
-				self.step = 2;
-			}
-		});
-	}
 
+        result
+    }
+
+    // 步骤0：输入链接
+    fn step0_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.label("GitHub 仓库链接 (例如: https://github.com/owner/repo):");
+        ui.text_edit_singleline(&mut self.repo_url);
+
+        ui.horizontal(|ui| {
+            let loading = self.loading;
+            let btn = ui.add_enabled(!loading, egui::Button::new("获取 Releases"));
+            if btn.clicked() && !self.repo_url.is_empty() {
+                // 去除首尾空格和换行
+                let trimmed = self.repo_url.trim().to_string();
+                self.repo_url = trimmed;
+
+                if let Some((owner, repo)) = GitHubClient::parse_repo_url(&self.repo_url) {
+                    self.owner = owner.clone();
+                    self.repo = repo.clone();
+                    self.loading = true;
+                    self.error = None;
+
+                    let fetch_result = self.fetch_result.clone();
+                    let ctx = ctx.clone();
+
+                    tokio::spawn(async move {
+                        let client = GitHubClient::new(None); // TODO: 从设置读取 token
+                        let result = client.fetch_releases(&owner, &repo).await
+                            .map_err(|e| e.to_string());
+
+                        *fetch_result.lock().unwrap() = Some(result);
+                        ctx.request_repaint();
+                    });
+                } else {
+                    self.error = Some("无效的 GitHub 链接".to_string());
+                }
+            }
+
+            if loading {
+                ui.spinner();
+            }
+
+            // 直接编辑按钮
+            if ui.button("直接编辑").clicked() {
+				// 清空 releases 以跳过步骤1
+				self.releases.clear();
+				self.step = 2;
+            }
+        });
+    }
+
+    // 步骤1：选择版本和资产
+    fn step1_ui(&mut self, ui: &mut egui::Ui) {
+        if self.releases.is_empty() {
+            ui.label("没有找到 releases，请返回上一步检查链接。");
+            if ui.button("上一步").clicked() {
+                self.step = 0;
+            }
+            return;
+        }
+		
+		// 最新版本为 releases 列表的第一个
+		self.latest_version = self.releases[0].tag_name.clone();
+
+        // 确保选中的版本有效
+        if self.selected_release_index >= self.releases.len() {
+            self.selected_release_index = 0;
+        }
+        let release = &self.releases[self.selected_release_index];
+
+        ui.label("选择版本:");
+        egui::ComboBox::from_label("版本")
+            .selected_text(&release.tag_name)
+            .show_ui(ui, |ui| {
+                for (i, rel) in self.releases.iter().enumerate() {
+                    if ui.selectable_value(&mut self.selected_release_index, i, &rel.tag_name).changed() {
+                        // 版本改变时重置资产索引
+                        self.selected_asset_index = 0;
+                    }
+                }
+            });
+
+        ui.label("选择安装包 (⭐ 为推荐匹配 Windows 的资产):");
+
+        let scored_indices = filter_assets_for_windows(&release.assets);
+
+        if scored_indices.is_empty() {
+            ui.colored_label(egui::Color32::YELLOW, "未找到匹配 Windows 的资产，请手动检查。");
+        }
+
+        // 确定默认选中的资产索引：优先推荐列表的第一个
+        if !release.assets.is_empty() {
+            if !scored_indices.is_empty() {
+                let is_current_recommended = scored_indices.iter().any(|(idx, _)| *idx == self.selected_asset_index);
+                if !is_current_recommended {
+                    self.selected_asset_index = scored_indices[0].0;
+                }
+            } else {
+                if self.selected_asset_index >= release.assets.len() {
+                    self.selected_asset_index = 0;
+                }
+            }
+            self.current_download_url = release.assets[self.selected_asset_index].browser_download_url.clone();
+            // 更新当前版本和资产名（用于步骤2预填充）
+            self.current_version = release.tag_name.clone();
+            self.asset_name = release.assets[self.selected_asset_index].name.clone();
+        } else {
+            self.selected_asset_index = 0;
+            self.current_download_url.clear();
+        }
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (original_index, _) in &scored_indices {
+                let asset = &release.assets[*original_index];
+                let lower_name = asset.name.to_lowercase();
+                let is_x64 = lower_name.contains("x86_64") || lower_name.contains("amd64") || lower_name.contains("x64");
+                let text = if is_x64 {
+                    format!("{} ⭐", asset.name)
+                } else {
+                    asset.name.clone()
+                };
+                if ui.radio(self.selected_asset_index == *original_index, text).clicked() {
+                    self.selected_asset_index = *original_index;
+                    self.current_download_url = asset.browser_download_url.clone();
+                    self.asset_name = asset.name.clone(); // 同步更新
+                }
+            }
+        });
+
+        // 显示下载链接和操作
+        if !scored_indices.is_empty() && self.selected_asset_index < release.assets.len() {
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label("下载链接:");
+                ui.vertical(|ui| {
+                    let mut url_display = self.current_download_url.clone();
+                    ui.add_sized([ui.available_width() - 100.0, 60.0],
+                        egui::TextEdit::multiline(&mut url_display)
+                            .desired_rows(3)
+                            .interactive(false)
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("📋 复制").clicked() {
+                            ui.ctx().copy_text(self.current_download_url.clone());
+                        }
+                        if ui.button("🌐 打开").clicked() {
+                            let url = self.current_download_url.clone();
+                            std::thread::spawn(move || {
+                                let _ = open::that(url);
+                            });
+                        }
+                    });
+                });
+            });
+            ui.label("提示：下载安装完成后，点击下一步填写本地信息。");
+        }
+
+        ui.horizontal(|ui| {
+            if ui.button("上一步").clicked() {
+                self.step = 0;
+            }
+            if ui.button("下一步").clicked() {
+                // 预填充软件名称（如果未设置）
+                if self.software_name.is_empty() {
+                    self.software_name = self.repo.clone();
+                }
+                self.step = 2;
+            }
+        });
+    }
+
+    // 步骤2：填写本地信息（所有字段可编辑）
     fn step2_ui(&mut self, ui: &mut egui::Ui, result: &mut Option<SoftwareEntry>) {
-        ui.label("软件名称:");
-        ui.text_edit_singleline(&mut self.name);
-        ui.label("别名:");
+        ui.label("软件名称（原名）:");
+        ui.text_edit_singleline(&mut self.software_name);
+
+        ui.label("别名（显示名称）:");
         ui.text_edit_singleline(&mut self.alias);
 
-		// 下面显示一些只读信息，提醒用户当前选择的版本和资产
-		ui.horizontal(|ui| {
-			ui.label("GitHub 仓库:");
-			ui.label(&self.repo_url);
-		});
-		ui.horizontal(|ui| {
-			ui.label("当前版本:");
-			if !self.releases.is_empty() && self.selected_release_index < self.releases.len() {
-				ui.label(&self.releases[self.selected_release_index].tag_name);
-			}
-		});
-		ui.horizontal(|ui| {
-			ui.label("软件包:");
-			if !self.releases.is_empty() && self.selected_asset_index < self.releases[self.selected_release_index].assets.len() {
-				let asset = &self.releases[self.selected_release_index].assets[self.selected_asset_index];
-				ui.label(&asset.name);
-			}
-		});
+        ui.horizontal(|ui| {
+            ui.label("GitHub 仓库:");
+            ui.label(format!("{}/{}", self.owner, self.repo));
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("当前版本:");
+            ui.text_edit_singleline(&mut self.current_version);
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("最新版本:");
+            ui.text_edit_singleline(&mut self.latest_version);
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("软件包:");
+            ui.text_edit_singleline(&mut self.asset_name);
+        });
 
         ui.label("安装路径:");
         ui.horizontal(|ui| {
@@ -293,8 +352,7 @@ impl AddWizard {
             if ui.button("浏览...").clicked() {
                 if let Some(path) = FileDialog::new().pick_folder() {
                     self.install_path = path.display().to_string();
-                    // 自动猜测可执行文件
-                    if let Some(exe) = crate::utils::path::guess_main_exe(&self.install_path) {
+                    if let Some(exe) = guess_main_exe(&self.install_path) {
                         self.executable_path = exe.display().to_string();
                     }
                 }
@@ -314,7 +372,7 @@ impl AddWizard {
                 }
             }
             if ui.button("自动检测").clicked() && !self.install_path.is_empty() {
-                if let Some(exe) = crate::utils::path::guess_main_exe(&self.install_path) {
+                if let Some(exe) = guess_main_exe(&self.install_path) {
                     self.executable_path = exe.display().to_string();
                 }
             }
@@ -331,25 +389,28 @@ impl AddWizard {
                 self.step = 1;
             }
             if ui.button("完成").clicked() {
-                // 构建条目
+				if self.software_name.trim().is_empty() {
+					self.error_message = "软件名称不能为空".to_string();
+					self.show_error_dialog = true;
+					return; // 直接返回，不继续构建条目
+				}
+
+                // 解析标签
                 let tags: Vec<String> = self.tags
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                
-                let asset = &self.releases[self.selected_release_index]
-                    .assets[self.selected_asset_index];
-                
+
                 let entry = SoftwareEntry {
                     id: None,
-                    name: self.name.clone(),
-                    alias: self.alias.clone(),
+                    name: self.software_name.clone(),
+                    alias: if self.alias.is_empty() { self.software_name.clone() } else { self.alias.clone() },
                     repo_owner: self.owner.clone(),
                     repo_name: self.repo.clone(),
-                    current_version: self.releases[self.selected_release_index].tag_name.clone(),
-                    latest_version: None,
-					asset_name: asset.name.clone(),
+                    current_version: self.current_version.clone(),
+                    latest_version: if self.latest_version.is_empty() { None } else { Some(self.latest_version.clone()) },
+                    asset_name: self.asset_name.clone(),
                     install_path: if self.install_path.is_empty() { None } else { Some(self.install_path.clone()) },
                     executable_path: if self.executable_path.is_empty() { None } else { Some(self.executable_path.clone()) },
                     notes: self.notes.clone(),

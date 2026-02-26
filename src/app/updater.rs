@@ -18,22 +18,19 @@ impl Updater {
     }
 
     /// 检查单个软件的更新
-    pub async fn check_for_updates(
-        &self,
-        entry: &SoftwareEntry,
-    ) -> Result<Option<String>> {
-        let latest = self.github_client
-            .fetch_latest_release(&entry.repo_owner, &entry.repo_name)
-            .await?;
-        
-        if let Some(release) = latest {
-            let latest_tag = release.tag_name;
-            if crate::utils::version::is_newer(&latest_tag, &entry.current_version) {
-                return Ok(Some(latest_tag));
-            }
-        }
-        Ok(None)
-    }
+	pub async fn check_for_updates(&self, entry: &SoftwareEntry) -> Result<Option<String>> {
+		if let Some((owner, repo)) = entry.parse_repo() {
+			let latest = self.github_client
+				.fetch_latest_release(&owner, &repo)
+				.await?;
+			if let Some(release) = latest {
+				if crate::utils::version::is_newer(&release.tag_name, &entry.current_version) {
+					return Ok(Some(release.tag_name));
+				}
+			}
+		}
+		Ok(None)
+	}
 
     /// 批量检查所有软件，并更新数据库中的 latest_version 字段
     pub async fn check_all_and_update_db(&self, conn: &Connection) -> Result<Vec<(i64, String)>> {

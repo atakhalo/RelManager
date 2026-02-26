@@ -8,8 +8,7 @@ pub struct SoftwareEntry {
     pub id: Option<i64>,
 	pub name: String,
     pub alias: String,              // 用户自定义别名（显示名称）
-    pub repo_owner: String,
-    pub repo_name: String,
+	pub repo_url: String,            // GitHub 仓库完整 URL
     pub current_version: String,
     pub latest_version: Option<String>,
     pub asset_name: String,          // 下载的资产文件名（用于显示软件包选项）
@@ -19,6 +18,13 @@ pub struct SoftwareEntry {
     pub tags: Vec<String>,
     pub created_at: DateTime<Local>,
     pub updated_at: DateTime<Local>,
+}
+
+impl SoftwareEntry {
+    /// 从 repo_url 解析出 owner 和 repo，用于 API 请求
+    pub fn parse_repo(&self) -> Option<(String, String)> {
+        crate::app::github::GitHubClient::parse_repo_url(&self.repo_url)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

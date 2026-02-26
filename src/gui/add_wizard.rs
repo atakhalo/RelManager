@@ -326,10 +326,8 @@ impl AddWizard {
         ui.label("别名（显示名称）:");
         ui.text_edit_singleline(&mut self.alias);
 
-        ui.horizontal(|ui| {
-            ui.label("GitHub 仓库:");
-            ui.label(format!("{}/{}", self.owner, self.repo));
-        });
+		ui.label("GitHub 仓库:");
+		ui.text_edit_singleline(&mut self.repo_url);
 
         ui.horizontal(|ui| {
             ui.label("当前版本:");
@@ -405,9 +403,8 @@ impl AddWizard {
                 let entry = SoftwareEntry {
                     id: None,
                     name: self.software_name.clone(),
-                    alias: if self.alias.is_empty() { self.software_name.clone() } else { self.alias.clone() },
-                    repo_owner: self.owner.clone(),
-                    repo_name: self.repo.clone(),
+                    alias:  self.alias.clone(),
+					repo_url: self.repo_url.trim().to_string(),
                     current_version: self.current_version.clone(),
                     latest_version: if self.latest_version.is_empty() { None } else { Some(self.latest_version.clone()) },
                     asset_name: self.asset_name.clone(),

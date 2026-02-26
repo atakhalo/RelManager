@@ -18,6 +18,9 @@ pub struct MainWindow {
     edit_dialog: Option<EditDialog>,
     settings_window: Option<SettingsWindow>,
     conn: Arc<Mutex<Connection>>, // 数据库连接，跨线程共享
+	show_delete_confirm: bool,
+    pending_delete_id: Option<i64>,
+    pending_delete_name: String,
 }
 
 impl MainWindow {
@@ -36,6 +39,9 @@ impl MainWindow {
             edit_dialog: None,
             settings_window: None,
             conn,
+			show_delete_confirm: false,
+			pending_delete_id: None,
+			pending_delete_name: String::new(),
         }
     }
 
@@ -166,112 +172,115 @@ impl eframe::App for MainWindow {
             });
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-			let entries: Vec<SoftwareEntry> = self.filtered_entries().into_iter().cloned().collect();
-			for entry in entries {
-				ui.group(|ui| {
-					ui.set_width(ui.available_width());
-					
-					// 第一行：别名(仓库名) + 按钮
-					ui.horizontal(|ui| {
-					// 显示别名（大、正常颜色）
-					ui.heading(&entry.alias);
-					// 显示名称（小字、浅色）
-					ui.colored_label(egui::Color32::GRAY, format!("({})", entry.name));
-						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-							if ui.button("✏️ 编辑").clicked() {
-								self.edit_dialog = Some(EditDialog::new(entry.clone()));
+				let entries: Vec<SoftwareEntry> = self.filtered_entries().into_iter().cloned().collect();
+				for entry in entries {
+					ui.group(|ui| {
+						ui.set_width(ui.available_width());
+						
+						// 第一行：名称（带别名逻辑）+ 版本信息 + 操作按钮
+						ui.horizontal(|ui| {
+							// 名称显示：若有别名则显示 "别名 (名称)"，否则只显示名称
+							if !entry.alias.is_empty() {
+								ui.heading(&entry.alias);
+								ui.colored_label(egui::Color32::GRAY, format!("({})", entry.name));
+							} else {
+								ui.heading(&entry.name);
 							}
-							if ui.button("🌐 仓库").clicked() {
-								let url = format!("https://github.com/{}/{}", entry.repo_owner, entry.repo_name);
-								let _ = open::that(url);
+
+							// 版本信息紧跟名称
+							ui.label(format!("当前: {}", entry.current_version));
+							if let Some(latest) = &entry.latest_version {
+								ui.label(format!("最新: {}", latest));
+								if latest != &entry.current_version {
+									ui.colored_label(egui::Color32::from_rgb(255, 180, 80), "有新版本!");
+								}
 							}
-							if ui.button("▶ 打开").clicked() {
-								if let Some(path) = &entry.executable_path {
+
+							// 操作按钮右对齐
+							ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+								// 删除按钮
+								if ui.button("🗑️ 删除").clicked() {
+									if let Some(id) = entry.id {
+										self.pending_delete_id = Some(id);
+										self.pending_delete_name = if !entry.alias.is_empty() {
+											format!("{} ({})", entry.alias, entry.name)
+										} else {
+											entry.name.clone()
+										};
+										self.show_delete_confirm = true;
+									}
+								}
+								if ui.button("✏️ 编辑").clicked() {
+									self.edit_dialog = Some(EditDialog::new(entry.clone()));
+								}
+								if ui.button("🌐 仓库").clicked() {
+									let _ = open::that(&entry.repo_url);
+								}
+								if ui.button("▶ 打开").clicked() {
+									if let Some(path) = &entry.executable_path {
+										let _ = open::that(path);
+									}
+								}
+								if ui.button("🔄 更新").clicked() {
+									// TODO: 触发单个软件的更新
+								}
+							});
+						});
+						
+						// 第二行：安装路径（可打开）+ 标签右对齐
+						ui.horizontal(|ui| {
+							if let Some(path) = &entry.install_path {
+								ui.label("📁 ");
+								if ui.link(path).clicked() {
 									let _ = open::that(path);
 								}
 							}
-							if ui.button("🔄 更新").clicked() {
-								// TODO: 触发更新
-							}
+							ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+								if !entry.tags.is_empty() {
+									ui.label(format!("🏷️ {}", entry.tags.join(", ")));
+								}
+							});
 						});
-					});
-					
-					// 第二行：当前版本(包名) | 最新版本 | 安装路径(可打开)
-					ui.horizontal(|ui| {
-						ui.label(format!("当前: {} ({})", entry.current_version, entry.asset_name));
-						if let Some(latest) = &entry.latest_version {
-							ui.label(format!("最新: {}", latest));
-							if latest != &entry.current_version {
-								ui.colored_label(egui::Color32::YELLOW, "有新版本!");
-							}
+						
+						// 第三行：备注
+						if !entry.notes.is_empty() {
+							ui.label(format!("📝 {}", entry.notes));
 						}
-						if let Some(path) = &entry.install_path {
-							ui.label("📁 ");
-							if ui.link(path).clicked() {
-								let _ = open::that(path);
-							}
-						}
-						// 标签右对齐
-						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-							if !entry.tags.is_empty() {
-								ui.label(format!("🏷️ {}", entry.tags.join(", ")));
-							}
-						});
 					});
-					
-					// 第三行：备注
-					if !entry.notes.is_empty() {
-						ui.label(format!("📝 {}", entry.notes));
-					}
-				});
-			}
-            });
+				};
+			});	
         });
-    }
-}
 
-impl MainWindow {
-    fn render_entry(&mut self, ui: &mut egui::Ui, entry: &SoftwareEntry) {
-        ui.group(|ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.heading(&entry.name);
-                ui.label(format!("当前: {}", entry.current_version));
-                if let Some(latest) = &entry.latest_version {
-                    ui.label(format!("最新: {}", latest));
-                    if latest != &entry.current_version {
-                        ui.colored_label(egui::Color32::YELLOW, "有新版本!");
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("✏️ 编辑").clicked() {
-                        self.edit_dialog = Some(EditDialog::new(entry.clone()));
-                    }
-                    if ui.button("🌐 仓库").clicked() {
-                        let url = format!("https://github.com/{}/{}", entry.repo_owner, entry.repo_name);
-                        let _ = open::that(url);
-                    }
-                    if ui.button("▶ 打开").clicked() {
-                        if let Some(path) = &entry.executable_path {
-                            let _ = open::that(path);
-                        }
-                    }
-                    if ui.button("🔄 更新").clicked() {
-                        // 触发单个软件的更新
-                    }
-                });
-            });
-            ui.horizontal(|ui| {
-                if let Some(path) = &entry.install_path {
-                    ui.label(format!("📁 {}", path));
-                }
-                if !entry.notes.is_empty() {
-                    ui.label(format!("📝 {}", entry.notes));
-                }
-                if !entry.tags.is_empty() {
-                    ui.label(format!("🏷️ {}", entry.tags.join(", ")));
-                }
-            });
-        });
+		// 删除确认弹窗
+		if self.show_delete_confirm {
+			egui::Window::new("确认删除")
+				.collapsible(false)
+				.resizable(false)
+				.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+				.show(ctx, |ui| {
+					ui.label(format!("确定要删除 \"{}\" 吗？此操作不可撤销。", self.pending_delete_name));
+					ui.horizontal(|ui| {
+						if ui.button("确认").clicked() {
+							if let Some(id) = self.pending_delete_id {
+								if let Ok(conn) = self.conn.try_lock() {
+									let _ = crate::app::db::delete_software(&conn, id);
+								}
+								// 刷新列表
+								self.entries = Self::load_entries(&self.conn);
+								self.all_tags = Self::extract_all_tags(&self.entries);
+								self.show_delete_confirm = false;
+								self.pending_delete_id = None;
+								self.pending_delete_name.clear();
+								ctx.request_repaint();
+							}
+						}
+						if ui.button("取消").clicked() {
+							self.show_delete_confirm = false;
+							self.pending_delete_id = None;
+							self.pending_delete_name.clear();
+						}
+					});
+				});
+		}
     }
 }

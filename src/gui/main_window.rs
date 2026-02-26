@@ -170,15 +170,13 @@ impl eframe::App for MainWindow {
 			for entry in entries {
 				ui.group(|ui| {
 					ui.set_width(ui.available_width());
+					
+					// 第一行：别名(仓库名) + 按钮
 					ui.horizontal(|ui| {
-						ui.heading(&entry.name);
-						ui.label(format!("当前: {}", entry.current_version));
-						if let Some(latest) = &entry.latest_version {
-							ui.label(format!("最新: {}", latest));
-							if latest != &entry.current_version {
-								ui.colored_label(egui::Color32::YELLOW, "有新版本!");
-							}
-						}
+					// 显示别名（大、正常颜色）
+					ui.heading(&entry.alias);
+					// 显示名称（小字、浅色）
+					ui.colored_label(egui::Color32::GRAY, format!("({})", entry.name));
 						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 							if ui.button("✏️ 编辑").clicked() {
 								self.edit_dialog = Some(EditDialog::new(entry.clone()));
@@ -193,21 +191,38 @@ impl eframe::App for MainWindow {
 								}
 							}
 							if ui.button("🔄 更新").clicked() {
-								// TODO: 触发单个软件的更新
+								// TODO: 触发更新
 							}
 						});
 					});
+					
+					// 第二行：当前版本(包名) | 最新版本 | 安装路径(可打开)
 					ui.horizontal(|ui| {
+						ui.label(format!("当前: {} ({})", entry.current_version, entry.asset_name));
+						if let Some(latest) = &entry.latest_version {
+							ui.label(format!("最新: {}", latest));
+							if latest != &entry.current_version {
+								ui.colored_label(egui::Color32::YELLOW, "有新版本!");
+							}
+						}
 						if let Some(path) = &entry.install_path {
-							ui.label(format!("📁 {}", path));
+							ui.label("📁 ");
+							if ui.link(path).clicked() {
+								let _ = open::that(path);
+							}
 						}
-						if !entry.notes.is_empty() {
-							ui.label(format!("📝 {}", entry.notes));
-						}
-						if !entry.tags.is_empty() {
-							ui.label(format!("🏷️ {}", entry.tags.join(", ")));
-						}
+						// 标签右对齐
+						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+							if !entry.tags.is_empty() {
+								ui.label(format!("🏷️ {}", entry.tags.join(", ")));
+							}
+						});
 					});
+					
+					// 第三行：备注
+					if !entry.notes.is_empty() {
+						ui.label(format!("📝 {}", entry.notes));
+					}
 				});
 			}
             });

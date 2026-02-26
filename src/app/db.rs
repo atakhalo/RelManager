@@ -1,21 +1,23 @@
 use rusqlite::{Connection, Result, params, OptionalExtension};
 use crate::app::model::SoftwareEntry;
-use chrono::{Local, DateTime};
+use chrono::{DateTime, Local};
 use serde_json;
 
-/// 初始化数据库表
+/// 初始化数据库表（如果不存在则创建）
 pub fn init_db() -> Result<Connection> {
     let conn = Connection::open("data.db")?;
-    
-    // 创建软件条目表
+
+    // 创建软件条目表，包含 name 和 alias 字段
     conn.execute(
         "CREATE TABLE IF NOT EXISTS software (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            alias TEXT NOT NULL,
             repo_owner TEXT NOT NULL,
             repo_name TEXT NOT NULL,
             current_version TEXT NOT NULL,
             latest_version TEXT,
+            asset_name TEXT NOT NULL,
             install_path TEXT,
             executable_path TEXT,
             notes TEXT,
@@ -25,7 +27,7 @@ pub fn init_db() -> Result<Connection> {
         )",
         [],
     )?;
-    
+
     // 创建设置表
     conn.execute(
         "CREATE TABLE IF NOT EXISTS settings (
@@ -34,7 +36,7 @@ pub fn init_db() -> Result<Connection> {
         )",
         [],
     )?;
-    
+
     Ok(conn)
 }
 
@@ -42,15 +44,17 @@ pub fn init_db() -> Result<Connection> {
 pub fn insert_software(conn: &Connection, entry: &SoftwareEntry) -> Result<i64> {
     conn.execute(
         "INSERT INTO software (
-            name, repo_owner, repo_name, current_version, latest_version,
-            install_path, executable_path, notes, tags, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            name, alias, repo_owner, repo_name, current_version, latest_version,
+            asset_name, install_path, executable_path, notes, tags, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             entry.name,
+            entry.alias,
             entry.repo_owner,
             entry.repo_name,
             entry.current_version,
             entry.latest_version,
+            entry.asset_name,
             entry.install_path,
             entry.executable_path,
             entry.notes,
@@ -65,33 +69,35 @@ pub fn insert_software(conn: &Connection, entry: &SoftwareEntry) -> Result<i64> 
 /// 查询所有软件条目
 pub fn get_all_software(conn: &Connection) -> Result<Vec<SoftwareEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, repo_owner, repo_name, current_version, latest_version,
-                install_path, executable_path, notes, tags, created_at, updated_at
+        "SELECT id, name, alias, repo_owner, repo_name, current_version, latest_version,
+                asset_name, install_path, executable_path, notes, tags, created_at, updated_at
          FROM software ORDER BY updated_at DESC"
     )?;
     let rows = stmt.query_map([], |row| {
-        let tags_json: String = row.get(9)?;
+        let tags_json: String = row.get(11)?;
         let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
         Ok(SoftwareEntry {
             id: row.get(0)?,
             name: row.get(1)?,
-            repo_owner: row.get(2)?,
-            repo_name: row.get(3)?,
-            current_version: row.get(4)?,
-            latest_version: row.get(5)?,
-            install_path: row.get(6)?,
-            executable_path: row.get(7)?,
-            notes: row.get(8)?,
+            alias: row.get(2)?,
+            repo_owner: row.get(3)?,
+            repo_name: row.get(4)?,
+            current_version: row.get(5)?,
+            latest_version: row.get(6)?,
+            asset_name: row.get(7)?,
+            install_path: row.get(8)?,
+            executable_path: row.get(9)?,
+            notes: row.get(10)?,
             tags,
-            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
+            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(12)?)
                 .map(|dt| dt.with_timezone(&Local))
                 .unwrap_or_else(|_| Local::now()),
-            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
+            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(13)?)
                 .map(|dt| dt.with_timezone(&Local))
                 .unwrap_or_else(|_| Local::now()),
         })
     })?;
-    
+
     let mut entries = Vec::new();
     for row in rows {
         entries.push(row?);
@@ -102,28 +108,30 @@ pub fn get_all_software(conn: &Connection) -> Result<Vec<SoftwareEntry>> {
 /// 根据ID查询单个软件
 pub fn get_software_by_id(conn: &Connection, id: i64) -> Result<Option<SoftwareEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, repo_owner, repo_name, current_version, latest_version,
-                install_path, executable_path, notes, tags, created_at, updated_at
+        "SELECT id, name, alias, repo_owner, repo_name, current_version, latest_version,
+                asset_name, install_path, executable_path, notes, tags, created_at, updated_at
          FROM software WHERE id = ?"
     )?;
     let result = stmt.query_row(params![id], |row| {
-        let tags_json: String = row.get(9)?;
+        let tags_json: String = row.get(11)?;
         let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
         Ok(SoftwareEntry {
             id: row.get(0)?,
             name: row.get(1)?,
-            repo_owner: row.get(2)?,
-            repo_name: row.get(3)?,
-            current_version: row.get(4)?,
-            latest_version: row.get(5)?,
-            install_path: row.get(6)?,
-            executable_path: row.get(7)?,
-            notes: row.get(8)?,
+            alias: row.get(2)?,
+            repo_owner: row.get(3)?,
+            repo_name: row.get(4)?,
+            current_version: row.get(5)?,
+            latest_version: row.get(6)?,
+            asset_name: row.get(7)?,
+            install_path: row.get(8)?,
+            executable_path: row.get(9)?,
+            notes: row.get(10)?,
             tags,
-            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
+            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(12)?)
                 .map(|dt| dt.with_timezone(&Local))
                 .unwrap_or_else(|_| Local::now()),
-            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
+            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(13)?)
                 .map(|dt| dt.with_timezone(&Local))
                 .unwrap_or_else(|_| Local::now()),
         })
@@ -137,22 +145,26 @@ pub fn update_software(conn: &Connection, entry: &SoftwareEntry) -> Result<usize
     conn.execute(
         "UPDATE software SET
             name = ?1,
-            repo_owner = ?2,
-            repo_name = ?3,
-            current_version = ?4,
-            latest_version = ?5,
-            install_path = ?6,
-            executable_path = ?7,
-            notes = ?8,
-            tags = ?9,
-            updated_at = ?10
-         WHERE id = ?11",
+            alias = ?2,
+            repo_owner = ?3,
+            repo_name = ?4,
+            current_version = ?5,
+            latest_version = ?6,
+            asset_name = ?7,
+            install_path = ?8,
+            executable_path = ?9,
+            notes = ?10,
+            tags = ?11,
+            updated_at = ?12
+         WHERE id = ?13",
         params![
             entry.name,
+            entry.alias,
             entry.repo_owner,
             entry.repo_name,
             entry.current_version,
             entry.latest_version,
+            entry.asset_name,
             entry.install_path,
             entry.executable_path,
             entry.notes,

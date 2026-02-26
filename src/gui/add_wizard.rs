@@ -18,6 +18,7 @@ pub struct AddWizard {
 	current_download_url: String,
     // 填写信息
     name: String,
+	alias: String, 
     install_path: String,
     executable_path: String,
     notes: String,
@@ -40,6 +41,7 @@ impl AddWizard {
             selected_asset_index: 0,
 			current_download_url: String::new(),
             name: String::new(),
+            alias: String::new(),
             install_path: String::new(),
             executable_path: String::new(),
             notes: String::new(),
@@ -138,14 +140,14 @@ impl AddWizard {
 		});
 	}
 
-    fn step1_ui(&mut self, ui: &mut egui::Ui) {
-        if self.releases.is_empty() {
-            ui.label("没有找到 releases，请返回上一步检查链接。");
-            if ui.button("上一步").clicked() {
-                self.step = 0;
-            }
-            return;
-        }
+	fn step1_ui(&mut self, ui: &mut egui::Ui) {
+		if self.releases.is_empty() {
+			ui.label("没有找到 releases，请返回上一步检查链接。");
+			if ui.button("上一步").clicked() {
+				self.step = 0;
+			}
+			return;
+		}
 
 		// 确保选中的版本有效
 		if self.selected_release_index >= self.releases.len() {
@@ -153,95 +155,130 @@ impl AddWizard {
 		}
 		let release = &self.releases[self.selected_release_index];
 
-        // 选择版本
-        ui.label("选择版本:");
-        egui::ComboBox::from_label("版本")
-            .selected_text(&self.releases[self.selected_release_index].tag_name)
-            .show_ui(ui, |ui| {
-                for (i, rel) in self.releases.iter().enumerate() {
-					if ui.selectable_value(&mut self.selected_release_index, i, &rel.tag_name).clicked() {
-						// 版本改变时重置资产索引
-						self.selected_asset_index = 0;
-						// 更新下载链接（将在后面统一处理）
-					}
-                }
-            });
+		// 选择版本
+		ui.label("选择版本:");
+		egui::ComboBox::from_label("版本")
+			.selected_text(&release.tag_name)
+			.show_ui(ui, |ui| {
+				for (i, rel) in self.releases.iter().enumerate() {
+					ui.selectable_value(&mut self.selected_release_index, i, &rel.tag_name);
+				}
+			});
 
-        // 选择资产
-        ui.label("选择安装包 (⭐ 为推荐匹配 Windows 的资产):");
-let scored_indices = crate::app::platform::filter_assets_for_windows(&release.assets);
+		ui.label("选择安装包 (⭐ 为推荐匹配 Windows 的资产):");
 
-    if scored_indices.is_empty() {
-        ui.colored_label(egui::Color32::YELLOW, "未找到匹配 Windows 的资产，请手动检查。");
-    }
+		// 计算过滤后的资产索引（按推荐度排序）
+		let scored_indices = crate::app::platform::filter_assets_for_windows(&release.assets);
 
-    // 确保资产索引有效，并更新当前下载链接
-    if release.assets.is_empty() {
-        self.selected_asset_index = 0;
-        self.current_download_url.clear();
-    } else {
-        if self.selected_asset_index >= release.assets.len() {
-            self.selected_asset_index = 0;
-        }
-        self.current_download_url = release.assets[self.selected_asset_index].browser_download_url.clone();
-    }
+		if scored_indices.is_empty() {
+			ui.colored_label(egui::Color32::YELLOW, "未找到匹配 Windows 的资产，请手动检查。");
+		}
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for (original_index, _) in &scored_indices {
-            let asset = &release.assets[*original_index];
-            let lower_name = asset.name.to_lowercase();
-            let is_x64 = lower_name.contains("x86_64") || lower_name.contains("amd64") || lower_name.contains("x64");
-            let text = if is_x64 {
-                format!("{} ⭐", asset.name)
-            } else {
-                asset.name.clone()
-            };
-            if ui.radio(self.selected_asset_index == *original_index, text).clicked() {
-                self.selected_asset_index = *original_index;
-                self.current_download_url = asset.browser_download_url.clone();
-            }
-        }
-    });
+		// 确定默认选中的资产索引：优先推荐列表的第一个
+		if !release.assets.is_empty() {
+			if !scored_indices.is_empty() {
+				// 如果当前选中的索引不在推荐列表中，则设为推荐列表的第一个
+				let is_current_recommended = scored_indices.iter().any(|(idx, _)| *idx == self.selected_asset_index);
+				if !is_current_recommended {
+					self.selected_asset_index = scored_indices[0].0;
+				}
+			} else {
+				// 无推荐时，确保索引在有效范围内
+				if self.selected_asset_index >= release.assets.len() {
+					self.selected_asset_index = 0;
+				}
+			}
+			// 更新下载链接
+			self.current_download_url = release.assets[self.selected_asset_index].browser_download_url.clone();
+		} else {
+			self.selected_asset_index = 0;
+			self.current_download_url.clear();
+		}
 
-    // 显示当前选中资产的下载链接
-    if !scored_indices.is_empty() && self.selected_asset_index < release.assets.len() {
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.label("下载链接:");
-            // 使用只读文本框显示链接
-            ui.add(egui::TextEdit::singleline(&mut self.current_download_url)
-                .desired_width(300.0)
-                .interactive(false));
-            if ui.button("📋 复制").clicked() {
-                ui.ctx().copy_text(self.current_download_url.clone());
-            }
-			if ui.button("🌐 打开").clicked() {
-            let url = self.current_download_url.clone();
-            let _ = std::thread::spawn(move || {
-                open::that(url).ok();
-            });
-        }
-        });
-        ui.label("提示：下载安装完成后，点击下一步填写本地信息。");
-    }
+		// 显示资产列表（只显示过滤后的，但可点击选择）
+		egui::ScrollArea::vertical().show(ui, |ui| {
+			for (original_index, _) in &scored_indices {
+				let asset = &release.assets[*original_index];
+				let lower_name = asset.name.to_lowercase();
+				let is_x64 = lower_name.contains("x86_64") || lower_name.contains("amd64") || lower_name.contains("x64");
+				let text = if is_x64 {
+					format!("{} ⭐", asset.name)
+				} else {
+					asset.name.clone()
+				};
+				if ui.radio(self.selected_asset_index == *original_index, text).clicked() {
+					self.selected_asset_index = *original_index;
+					self.current_download_url = asset.browser_download_url.clone();
+				}
+			}
+		});
 
-        ui.horizontal(|ui| {
-            if ui.button("上一步").clicked() {
-                self.step = 0;
-            }
-            if ui.button("下一步").clicked() {
-                // 预填充名称
-                if self.name.is_empty() {
-                    self.name = self.repo.clone();
-                }
-                self.step = 2;
-            }
-        });
-    }
+		// 显示当前选中资产的下载链接
+		if !scored_indices.is_empty() && self.selected_asset_index < release.assets.len() {
+			ui.add_space(10.0);
+			ui.horizontal(|ui| {
+				ui.label("下载链接:");
+				ui.vertical(|ui| {
+					let mut url_display = self.current_download_url.clone();
+					ui.add_sized([ui.available_width() - 100.0, 60.0], 
+						egui::TextEdit::multiline(&mut url_display)
+							.desired_rows(3)
+							.interactive(false)
+					);
+					ui.horizontal(|ui| {
+						if ui.button("📋 复制").clicked() {
+							ui.ctx().copy_text(self.current_download_url.clone());
+						}
+						if ui.button("🌐 打开").clicked() {
+							let url = self.current_download_url.clone();
+							std::thread::spawn(move || {
+								let _ = open::that(url);
+							});
+						}
+					});
+				});
+			});
+			ui.label("提示：下载安装完成后，点击下一步填写本地信息。");
+		}
+
+		ui.horizontal(|ui| {
+			if ui.button("上一步").clicked() {
+				self.step = 0;
+			}
+			if ui.button("下一步").clicked() {
+				// 预填充名称
+				if self.name.is_empty() {
+					self.name = self.repo.clone();
+				}
+				self.step = 2;
+			}
+		});
+	}
 
     fn step2_ui(&mut self, ui: &mut egui::Ui, result: &mut Option<SoftwareEntry>) {
         ui.label("软件名称:");
         ui.text_edit_singleline(&mut self.name);
+        ui.label("别名:");
+        ui.text_edit_singleline(&mut self.alias);
+
+		// 下面显示一些只读信息，提醒用户当前选择的版本和资产
+		ui.horizontal(|ui| {
+			ui.label("GitHub 仓库:");
+			ui.label(format!("{}/{}", self.owner, self.repo));
+		});
+		ui.horizontal(|ui| {
+			ui.label("当前版本:");
+			if !self.releases.is_empty() && self.selected_release_index < self.releases.len() {
+				ui.label(&self.releases[self.selected_release_index].tag_name);
+			}
+		});
+		ui.horizontal(|ui| {
+			ui.label("软件包:");
+			if !self.releases.is_empty() && self.selected_asset_index < self.releases[self.selected_release_index].assets.len() {
+				let asset = &self.releases[self.selected_release_index].assets[self.selected_asset_index];
+				ui.label(&asset.name);
+			}
+		});
 
         ui.label("安装路径:");
         ui.horizontal(|ui| {
@@ -300,10 +337,12 @@ let scored_indices = crate::app::platform::filter_assets_for_windows(&release.as
                 let entry = SoftwareEntry {
                     id: None,
                     name: self.name.clone(),
+                    alias: self.alias.clone(),
                     repo_owner: self.owner.clone(),
                     repo_name: self.repo.clone(),
                     current_version: self.releases[self.selected_release_index].tag_name.clone(),
                     latest_version: None,
+					asset_name: asset.name.clone(),
                     install_path: if self.install_path.is_empty() { None } else { Some(self.install_path.clone()) },
                     executable_path: if self.executable_path.is_empty() { None } else { Some(self.executable_path.clone()) },
                     notes: self.notes.clone(),

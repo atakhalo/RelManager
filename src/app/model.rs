@@ -6,11 +6,13 @@ use crate::app::db;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SoftwareEntry {
     pub id: Option<i64>,
-    pub name: String,
+	pub name: String,
+    pub alias: String,              // 用户自定义别名（显示名称）
     pub repo_owner: String,
     pub repo_name: String,
     pub current_version: String,
     pub latest_version: Option<String>,
+    pub asset_name: String,          // 下载的资产文件名（用于显示软件包选项）
     pub install_path: Option<String>,
     pub executable_path: Option<String>,
     pub notes: String,

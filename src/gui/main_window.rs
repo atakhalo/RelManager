@@ -8,6 +8,14 @@ use crate::gui::tag_group_manager::TagGroupManager;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
+use crate::app::updater::Updater;
+use chrono::{Local, DateTime, Duration};
+use anyhow::anyhow;
+use crate::app::model::Settings;
+
+use tokio::task;
+
+
 
 pub struct MainWindow {
     entries: Vec<SoftwareEntry>,
@@ -26,6 +34,16 @@ pub struct MainWindow {
     show_delete_confirm: bool,
     pending_delete_id: Option<i64>,
     pending_delete_name: String,
+
+	updater: Option<Updater>,
+    check_all_in_progress: bool,
+    check_single_in_progress: HashSet<i64>,
+    last_check_time: Option<DateTime<Local>>,
+    auto_check_interval_hours: u64,
+    show_update_toast: bool,
+    update_messages: Vec<String>,
+	first_frame: bool,
+	checking_count: u32,
 }
 
 impl MainWindow {
@@ -34,6 +52,15 @@ impl MainWindow {
         let entries = Self::load_entries(&conn);
         let all_tags = Self::extract_all_tags(&entries);
         let tag_groups = Self::load_tag_groups(&conn);
+
+		// 从数据库加载设置
+		let (token, interval, last_check) = if let Ok(conn_guard) = conn.lock() {
+			let settings = Settings::load_from_db(&conn_guard).unwrap_or_default();
+			(settings.github_token, settings.auto_check_interval_hours, settings.last_check_time)
+		} else {
+			(None, 24, None)
+		};
+
         Self {
             entries,
             filter_text: String::new(),
@@ -50,6 +77,15 @@ impl MainWindow {
             show_delete_confirm: false,
             pending_delete_id: None,
             pending_delete_name: String::new(),
+			updater: Some(Updater::new(token)),
+			check_all_in_progress: false,
+			check_single_in_progress: HashSet::new(),
+			last_check_time: last_check,
+			auto_check_interval_hours: interval,
+			show_update_toast: false,
+			update_messages: Vec::new(),
+			first_frame: true,
+			checking_count:0,
         }
     }
 
@@ -97,10 +133,150 @@ impl MainWindow {
             })
             .collect()
     }
+
+	/// 手动检查所有软件的更新
+	fn check_all_updates(&mut self, ctx: &egui::Context) {
+		if self.check_all_in_progress {
+			return;
+		}
+		self.check_all_in_progress = true;
+
+		let updater = self.updater.clone().expect("Updater not initialized");
+		let conn = self.conn.clone();
+		let ctx = ctx.clone();
+
+		tokio::spawn(async move {
+			let conn_for_first = conn.clone();
+
+			// 定义一个异步块返回 Result，便于统一处理错误
+			let result: Result<(String, Vec<String>), anyhow::Error> = async {
+				// 1. 在阻塞线程中获取所有软件条目
+				let entries = task::spawn_blocking(move || {
+					let conn_guard = conn_for_first.lock().unwrap();
+					db::get_all_software(&conn_guard).unwrap_or_default()
+				})
+				.await
+				.map_err(|e| anyhow::anyhow!("获取软件列表失败: {}", e))?;
+
+				// 2. 逐个检查更新（异步）
+				let mut updated_entries = Vec::new();
+				for entry in entries {
+					if let Ok(Some(latest)) = updater.check_for_updates(&entry).await {
+						updated_entries.push((entry.id.unwrap(), entry.name, latest));
+					}
+				}
+
+				// 3. 在阻塞线程中更新数据库
+				let conn_for_second = conn.clone();
+				let updated_entries_clone = updated_entries.clone();
+				task::spawn_blocking(move || {
+					let conn_guard = conn_for_second.lock().unwrap();
+					for (id, _, latest) in &updated_entries_clone {
+						if let Ok(Some(mut entry)) = db::get_software_by_id(&conn_guard, *id) {
+							entry.latest_version = Some(latest.clone());
+							entry.updated_at = Local::now();
+							let _ = db::update_software(&conn_guard, &entry);
+						}
+					}
+					// 更新最后检查时间
+					let now = Local::now();
+					let _ = db::save_setting(&conn_guard, "last_check_time", &now.to_rfc3339());
+					Ok::<_, anyhow::Error>(())
+				})
+				.await
+				.map_err(|e| anyhow::anyhow!("数据库更新任务失败: {}", e))??; // 先处理 spawn_blocking 错误，再处理内部 Result
+
+				// 4. 准备结果消息
+				let (msg, updated_names) = if updated_entries.is_empty() {
+					("所有软件已是最新".to_string(), vec![])
+				} else {
+					let names: Vec<String> = updated_entries
+						.iter()
+						.map(|(_, name, ver)| format!("{} -> {}", name, ver))
+						.collect();
+					(format!("发现 {} 个更新", updated_entries.len()), names)
+				};
+
+				Ok((msg, updated_names))
+			}
+			.await;
+
+			// 将结果存储到 UI 上下文
+			match result {
+				Ok((msg, updated_names)) => {
+					ctx.memory_mut(|mem| {
+						mem.data.insert_temp("update_result".into(), (msg, updated_names));
+					});
+				}
+				Err(e) => {
+					let err_msg = format!("检查更新失败: {}", e);
+					ctx.memory_mut(|mem| {
+						mem.data.insert_temp::<(String, Vec<String>)>("update_result".into(), (err_msg, vec![]));
+					});
+				}
+			}
+			ctx.request_repaint();
+		});
+	}
+
+    /// 检查单个软件更新
+    fn check_single_update(&mut self, entry_id: i64, ctx: &egui::Context) {
+        if self.check_single_in_progress.contains(&entry_id) {
+            return;
+        }
+        self.check_single_in_progress.insert(entry_id);
+
+        // 查找该条目
+        let entry_opt = self.entries.iter().find(|e| e.id == Some(entry_id)).cloned();
+        if let Some(entry) = entry_opt {
+            let updater = self.updater.clone().expect("Updater not initialized");
+            let conn = self.conn.clone();
+            let ctx = ctx.clone();
+
+            tokio::spawn(async move {
+                let result = updater.check_for_updates(&entry).await;
+                let msg = match result {
+                    Ok(Some(latest)) => {
+                        // 更新数据库
+                        if let Ok(conn_guard) = conn.lock() {
+                            let mut updated_entry = entry.clone();
+                            updated_entry.latest_version = Some(latest.clone());
+                            updated_entry.updated_at = chrono::Local::now();
+                            let _ = db::update_software(&conn_guard, &updated_entry);
+                        }
+                        format!("{} 有新版本: {}", entry.name, latest)
+                    }
+                    Ok(None) => format!("{} 已是最新", entry.name),
+                    Err(e) => format!("{} 检查失败: {}", entry.name, e),
+                };
+				ctx.memory_mut(|mem| {
+					mem.data.insert_temp("single_update_result".into(), msg);
+				});
+                ctx.request_repaint();
+            });
+        } else {
+            self.check_single_in_progress.remove(&entry_id);
+        }
+    }
 }
 
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+		if self.first_frame {
+			self.first_frame = false;
+			// 检查是否需要自动更新
+			if self.auto_check_interval_hours > 0 {
+				let now = Local::now();
+				let should_check = match self.last_check_time {
+					Some(last) => (now - last).num_hours() >= self.auto_check_interval_hours as i64,
+					None => true,
+				};
+				if should_check {
+					self.check_all_updates(ctx);
+				}
+			}
+		}
+
         // 处理添加向导
         if self.show_add_wizard {
             let mut wizard = self.add_wizard.take().unwrap_or_else(AddWizard::new);
@@ -203,8 +379,8 @@ impl eframe::App for MainWindow {
                 if ui.button("🏷️ 标签组").clicked() {
                     self.show_tag_group_manager = true;
                 }
-                if ui.button("🔄 检查更新").clicked() {
-                    // TODO: 触发批量更新
+                if ui.button("🔄 批量检查更新").clicked() {
+                    self.check_all_updates(ctx);
                 }
             });
         });
@@ -321,8 +497,10 @@ impl eframe::App for MainWindow {
                                         let _ = open::that(path);
                                     }
                                 }
-                                if ui.button("🔄 更新").clicked() {
-                                    // TODO: 单个更新
+                                if ui.button("🔄 检查更新").clicked() {
+									if let Some(id) = entry.id {
+										self.check_single_update(id, ctx);
+									}
                                 }
                             });
                         });
@@ -350,5 +528,50 @@ impl eframe::App for MainWindow {
                 }
             });
         });
+
+		// 处理批量更新结果
+		if let Some((msg, updated)) = ctx.memory(|mem| mem.data.get_temp::<(String, Vec<String>)>("update_result".into())) {
+			self.update_messages = updated;
+			self.show_update_toast = true;
+			self.check_all_in_progress = false;
+			self.entries = Self::load_entries(&self.conn);
+			self.all_tags = Self::extract_all_tags(&self.entries);
+			ctx.memory_mut(|mem| mem.data.remove::<(String, Vec<String>)>("update_result".into()));
+		}
+
+		// 更新最后检查时间
+		if let Some(time_str) = ctx.memory(|mem| mem.data.get_temp::<String>("last_check_time".into())) {
+			if let Ok(dt) = DateTime::parse_from_rfc3339(&time_str) {
+				self.last_check_time = Some(dt.with_timezone(&Local));
+			}
+			ctx.memory_mut(|mem| mem.data.remove::<String>("last_check_time".into()));
+		}
+
+		// 处理单个更新结果
+		if let Some(msg) = ctx.memory(|mem| mem.data.get_temp::<String>("single_update_result".into())) {
+			self.update_messages.push(msg);
+			self.show_update_toast = true;
+			self.check_single_in_progress.clear();
+			self.entries = Self::load_entries(&self.conn);
+			ctx.memory_mut(|mem| mem.data.remove::<String>("single_update_result".into()));
+		}
+
+		if self.show_update_toast && !self.update_messages.is_empty() {
+			egui::Window::new("更新结果")
+				.collapsible(false)
+				.resizable(false)
+				.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+				.show(ctx, |ui| {
+					for msg in &self.update_messages {
+						ui.label(msg);
+					}
+					ui.horizontal(|ui| {
+						if ui.button("确定").clicked() {
+							self.show_update_toast = false;
+							self.update_messages.clear();
+						}
+					});
+				});
+		}
     }
 }

@@ -18,6 +18,7 @@ pub struct Asset {
     pub size: Option<u64>,
 }
 
+#[derive(Clone)]
 pub struct GitHubClient {
     client: Client,
     token: Option<String>,

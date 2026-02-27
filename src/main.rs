@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 // 声明模块
 mod app;
 mod gui;
@@ -6,6 +8,22 @@ mod utils;
 use eframe::egui;
 use crate::gui::main_window::MainWindow;
 use crate::app::db;
+use image::ImageFormat;
+use image::GenericImageView;
+use std::io::Cursor;
+use std::sync::Arc;
+
+fn load_icon_from_path(path: &str) -> Option<Arc<egui::IconData>> {
+    // 使用 image 库加载图片（支持 PNG、ICO 等格式）
+    let img = image::open(path).ok()?;
+    let (width, height) = img.dimensions();
+    let rgba = img.to_rgba8().into_raw();
+    Some(Arc::new(egui::IconData {
+        rgba,
+        width,
+        height,
+    }))
+}
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init();
@@ -17,16 +35,22 @@ fn main() -> Result<(), eframe::Error> {
     // 初始化数据库
     let conn = db::init_db().expect("Failed to initialize database");
     
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1200.0, 700.0])
+        .with_min_inner_size([600.0, 400.0])
+        .with_title("RelManager");
+	// 如果图标存在，则设置图标
+	let icon_opt = load_icon_from_path("Rel.ico");
+    if let Some(icon) = icon_opt {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 700.0])
-            .with_min_inner_size([600.0, 400.0])
-            .with_title("GitHub Release Manager"),
+        viewport,
         ..Default::default()
     };
     
     eframe::run_native(
-        "GitHub 发布管理",
+        "RelManager",
         options,
         Box::new(|cc| {
             // 设置中文字体（通常默认已支持，但显式配置可确保兼容性）

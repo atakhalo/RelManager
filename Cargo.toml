@@ -1,5 +1,5 @@
 [package]
-name = "github-release-manager"
+name = "RelManager"
 version = "0.1.0"
 edition = "2021"
 
@@ -23,3 +23,7 @@ walkdir = "2"               # 遍历目录
 anyhow = "1"                 # 简化错误处理
 thiserror = "1"              # 自定义错误类型
 futures = "0.3"              # 异步处理
+image = "0.24"
+
+[build-dependencies]
+winres = "0.1"

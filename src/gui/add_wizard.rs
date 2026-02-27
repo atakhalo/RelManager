@@ -189,13 +189,15 @@ impl AddWizard {
                 ui.spinner();
             }
 
-            // 直接编辑按钮
-            if ui.button("直接编辑").clicked() {
-				// 清空 releases 以跳过步骤1
-				self.releases.clear();
-				self.step = 2;
-            }
         });
+		ui.separator();
+
+		// 直接编辑按钮
+		if ui.button("非github软件，直接编辑信息").clicked() {
+			// 清空 releases 以跳过步骤1
+			self.releases.clear();
+			self.step = 2;
+		}
     }
 
     // 步骤1：选择版本和资产
@@ -320,10 +322,10 @@ impl AddWizard {
 
     // 步骤2：填写本地信息（所有字段可编辑）
     fn step2_ui(&mut self, ui: &mut egui::Ui, result: &mut Option<SoftwareEntry>) {
-        ui.label("软件名称（原名）:");
+        ui.label("软件名称（必填）:");
         ui.text_edit_singleline(&mut self.software_name);
 
-        ui.label("别名（显示名称）:");
+        ui.label("别名:");
         ui.text_edit_singleline(&mut self.alias);
 
 		ui.label("GitHub 仓库:");

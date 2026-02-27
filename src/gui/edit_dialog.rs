@@ -6,6 +6,8 @@ pub struct EditDialog {
     entry: SoftwareEntry,
     open: bool,
     tags_string: String,
+	show_error_dialog: bool,
+	error_message: String,
 }
 
 impl EditDialog {
@@ -15,6 +17,8 @@ impl EditDialog {
             entry,
             open: true,
             tags_string,
+			show_error_dialog: false,
+			error_message: String::new(),
         }
     }
 
@@ -25,11 +29,11 @@ impl EditDialog {
                 .default_width(450.0)
                 .show(ctx, |ui| {
                     // 名称（原名）
-                    ui.label("名称（原名）:");
+                    ui.label("名称（必填）:");
                     ui.text_edit_singleline(&mut self.entry.name);
 
                     // 别名
-                    ui.label("别名（显示名称）:");
+                    ui.label("别名:");
                     ui.text_edit_singleline(&mut self.entry.alias);
 
                     // 仓库信息
@@ -102,6 +106,12 @@ impl EditDialog {
 
                     ui.horizontal(|ui| {
                         if ui.button("保存").clicked() {
+							if self.entry.name.trim().is_empty() {
+								self.error_message = "软件名称不能为空".to_string();
+								self.show_error_dialog = true;
+								return; // 直接返回，不继续构建条目
+							}
+
                             self.entry.tags = self.tags_string
                                 .split(',')
                                 .map(|s| s.trim().to_string())
@@ -116,6 +126,21 @@ impl EditDialog {
                         }
                     });
                 });
+			// 错误弹窗（独立窗口）
+			if self.show_error_dialog {
+				egui::Window::new("错误")
+					.collapsible(false)
+					.resizable(false)
+					.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+					.show(ctx, |ui| {
+						ui.label(&self.error_message);
+						ui.horizontal(|ui| {
+							if ui.button("确定").clicked() {
+								self.show_error_dialog = false;
+							}
+						});
+					});
+			}
         }
         result
     }

@@ -24,24 +24,9 @@ RelManager 是一款window下的标签化软件管理程序，并提供对 GitHu
   - 检测到新版本时自动更新软件的最新版本，并在界面中高亮显示。
   - 可在设置中输入个人访问令牌，提高 API 调用限额（默认匿名每小时 60 次）。
 
-## 安装与运行
-
-### 前置要求
-- 安装 [Rust](https://www.rust-lang.org/) 工具链（包含 cargo）。
-
-### 从源码构建
-```bash
-git clone https://github.com/yourusername/github-release-manager.git
-cd github-release-manager
-cargo build --release
-```
-编译后的可执行文件位于 `target/release/` 目录下（Windows 为 `github-release-manager.exe`）。
-
-### 直接运行
-```bash
-cargo run
-```
-首次运行会在当前目录创建 `data.db` 数据库文件。
+## 下载运行
+在release中可以下载最新版本的软件exe。
+运行会在文件目录创建 `data.db` 数据库文件。
 
 ## 使用方法
 

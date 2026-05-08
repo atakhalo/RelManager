@@ -346,7 +346,7 @@ impl AddWizard {
             ui.text_edit_singleline(&mut self.asset_name);
         });
 
-        ui.label("安装路径:");
+        ui.label("根路径:");
         ui.horizontal(|ui| {
             ui.text_edit_singleline(&mut self.install_path);
             if ui.button("浏览...").clicked() {
@@ -359,24 +359,34 @@ impl AddWizard {
             }
         });
 
-        ui.label("可执行文件:");
+
         ui.horizontal(|ui| {
-            ui.text_edit_singleline(&mut self.executable_path);
-            if ui.button("浏览...").clicked() {
+			ui.label("目标文件/文件夹: ");
+            if ui.button("文件").clicked() {
                 if let Some(path) = FileDialog::new()
-                    .add_filter("exe", &["exe"])
+                    // .add_filter("exe", &["exe"])
                     .set_directory(&self.install_path)
                     .pick_file()
                 {
                     self.executable_path = path.display().to_string();
                 }
             }
-            if ui.button("自动检测").clicked() && !self.install_path.is_empty() {
+			if ui.button("文件夹").clicked() {
+                if let Some(path) = FileDialog::new()
+                    .set_directory(&self.install_path)
+                    .pick_folder()
+                {
+                    self.executable_path = path.display().to_string();
+                }
+            }
+            if ui.button("自动检测exe").clicked() && !self.install_path.is_empty() {
                 if let Some(exe) = guess_main_exe(&self.install_path) {
                     self.executable_path = exe.display().to_string();
                 }
             }
         });
+		ui.text_edit_singleline(&mut self.executable_path);
+
 
         ui.label("备注:");
         ui.text_edit_multiline(&mut self.notes);

@@ -60,7 +60,7 @@ impl EditDialog {
                     });
 
                     // 安装路径
-                    ui.label("安装路径:");
+                    ui.label("根路径:");
                     ui.horizontal(|ui| {
                         let mut path = self.entry.install_path.clone().unwrap_or_default();
                         if ui.text_edit_singleline(&mut path).changed() {
@@ -79,22 +79,30 @@ impl EditDialog {
                     });
 
                     // 可执行文件
-                    ui.label("可执行文件:");
                     ui.horizontal(|ui| {
-                        let mut exe = self.entry.executable_path.clone().unwrap_or_default();
-                        if ui.text_edit_singleline(&mut exe).changed() {
-                            self.entry.executable_path = if exe.is_empty() { None } else { Some(exe) };
-                        }
-                        if ui.button("浏览...").clicked() {
+						ui.label("目标文件:");
+                        if ui.button("文件").clicked() {
                             if let Some(path) = FileDialog::new()
-                                .add_filter("exe", &["exe"])
+                                // .add_filter("exe", &["exe"])
                                 .set_directory(self.entry.install_path.as_deref().unwrap_or(""))
                                 .pick_file()
                             {
                                 self.entry.executable_path = Some(path.display().to_string());
                             }
                         }
+						if ui.button("文件夹").clicked() {
+                            if let Some(path) = FileDialog::new()
+                                .set_directory(self.entry.install_path.as_deref().unwrap_or(""))
+                                .pick_folder()
+                            {
+                                self.entry.executable_path = Some(path.display().to_string());
+                            }
+                        }
                     });
+					let mut exe = self.entry.executable_path.clone().unwrap_or_default();
+					if ui.text_edit_singleline(&mut exe).changed() {
+						self.entry.executable_path = if exe.is_empty() { None } else { Some(exe) };
+					};
 
                     // 备注
                     ui.label("备注:");

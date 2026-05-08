@@ -6,6 +6,7 @@ use crate::gui::add_wizard::AddWizard;
 use crate::gui::settings_window::SettingsWindow;
 use crate::gui::tag_group_manager::TagGroupManager;
 use rusqlite::Connection;
+use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
 use crate::app::updater::Updater;
@@ -492,7 +493,23 @@ impl eframe::App for MainWindow {
                                 }
                                 if ui.button("▶ 打开").clicked() {
                                     if let Some(path) = &entry.executable_path {
-                                        let _ = open::that(path);
+										if path.ends_with(".bat") {
+											if let Some(bat_path_str) = &entry.executable_path {
+												let bat_path = std::path::Path::new(bat_path_str);
+												let full_command = format!(r#"start "{}" "{}""#, entry.name, bat_path_str);
+												let dir = bat_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+												    let status = std::process::Command::new("cmd")
+														.arg("/c")  // 注意路径可能含空格，start会正确处理
+														.raw_arg(&full_command)
+														.current_dir(dir)
+														.status();
+													if let Err(e) = status {
+														eprintln!("启动失败: {}", e);
+													}
+											}
+										} else {
+											let _ = open::that(&path);
+										}
                                     }
                                 }
                                 if ui.button("🔄 检查更新").clicked() {

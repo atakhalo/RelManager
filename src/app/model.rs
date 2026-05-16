@@ -5,6 +5,12 @@ use crate::app::db;
 use anyhow::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkedFolder {
+    pub alias: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SoftwareEntry {
     pub id: Option<i64>,
 	pub name: String,
@@ -17,6 +23,7 @@ pub struct SoftwareEntry {
     pub executable_path: Option<String>,
     pub notes: String,
     pub tags: Vec<String>,
+    pub linked_folders: Vec<LinkedFolder>,
     pub created_at: DateTime<Local>,
     pub updated_at: DateTime<Local>,
 }

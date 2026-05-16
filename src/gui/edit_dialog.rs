@@ -108,6 +108,36 @@ impl EditDialog {
                     ui.label("备注:");
                     ui.text_edit_multiline(&mut self.entry.notes);
 
+                    // 关联文件夹
+                    ui.label("关联文件夹:");
+                    let mut remove_idx: Option<usize> = None;
+                    for (i, folder) in self.entry.linked_folders.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label("别名:");
+                            ui.text_edit_singleline(&mut folder.alias);
+                            let display = if folder.alias.trim().is_empty() {
+                                folder.path.clone()
+                            } else {
+                                folder.alias.clone()
+                            };
+                            ui.label(&display);
+                            if ui.button("🗑️").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove_idx {
+                        self.entry.linked_folders.remove(i);
+                    }
+                    if ui.button("📂 添加文件夹").clicked() {
+                        if let Some(path) = FileDialog::new().pick_folder() {
+                            self.entry.linked_folders.push(crate::app::model::LinkedFolder {
+                                alias: String::new(),
+                                path: path.display().to_string(),
+                            });
+                        }
+                    }
+
                     // 标签
                     ui.label("标签 (逗号分隔):");
                     ui.text_edit_singleline(&mut self.tags_string);

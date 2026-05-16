@@ -535,6 +535,24 @@ impl eframe::App for MainWindow {
                             });
                         });
 
+                        // 关联文件夹行
+                        if !entry.linked_folders.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.label("📂");
+                                for folder in &entry.linked_folders {
+                                    let display = if folder.alias.trim().is_empty() {
+                                        &folder.path
+                                    } else {
+                                        &folder.alias
+                                    };
+                                    if ui.link(display).clicked() {
+                                        let _ = open::that(&folder.path);
+                                    }
+                                    ui.label("  ");
+                                }
+                            });
+                        }
+
                         // 第三行：备注
                         if !entry.notes.is_empty() {
                             ui.label(format!("📝 {}", entry.notes));

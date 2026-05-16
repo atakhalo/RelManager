@@ -26,6 +26,7 @@ pub struct AddWizard {
     executable_path: String,
     notes: String,
     tags: String,
+    linked_folders: Vec<crate::app::model::LinkedFolder>,
     // 异步状态
     loading: bool,
     error: Option<String>,
@@ -56,6 +57,7 @@ impl AddWizard {
             executable_path: String::new(),
             notes: String::new(),
             tags: String::new(),
+            linked_folders: Vec::new(),
             loading: false,
             error: None,
             fetch_result: Arc::new(Mutex::new(None)),
@@ -391,6 +393,36 @@ impl AddWizard {
         ui.label("备注:");
         ui.text_edit_multiline(&mut self.notes);
 
+        // 关联文件夹
+        ui.label("关联文件夹:");
+        let mut remove_idx: Option<usize> = None;
+        for (i, folder) in self.linked_folders.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label("别名:");
+                ui.text_edit_singleline(&mut folder.alias);
+                let display = if folder.alias.trim().is_empty() {
+                    folder.path.clone()
+                } else {
+                    folder.alias.clone()
+                };
+                ui.label(&display);
+                if ui.button("🗑️").clicked() {
+                    remove_idx = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove_idx {
+            self.linked_folders.remove(i);
+        }
+        if ui.button("📂 添加文件夹").clicked() {
+            if let Some(path) = FileDialog::new().pick_folder() {
+                self.linked_folders.push(crate::app::model::LinkedFolder {
+                    alias: String::new(),
+                    path: path.display().to_string(),
+                });
+            }
+        }
+
         ui.label("标签 (逗号分隔):");
         ui.text_edit_singleline(&mut self.tags);
 
@@ -424,6 +456,7 @@ impl AddWizard {
                     executable_path: if self.executable_path.is_empty() { None } else { Some(self.executable_path.clone()) },
                     notes: self.notes.clone(),
                     tags,
+                    linked_folders: self.linked_folders.clone(),
                     created_at: Local::now(),
                     updated_at: Local::now(),
                 };

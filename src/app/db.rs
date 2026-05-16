@@ -9,7 +9,7 @@ use crate::app::model::TagGroup;
 const ALL_FIELDS: &[&str] = &[
     "id", "name", "alias", "repo_url", "current_version", "latest_version",
     "asset_name", "install_path", "executable_path", "notes", "tags",
-    "created_at", "updated_at"
+    "created_at", "updated_at", "linked_folders"
 ];
 
 // 字段索引常量（必须与 ALL_FIELDS 顺序一致）
@@ -26,25 +26,31 @@ const IDX_NOTES: usize = 9;
 const IDX_TAGS: usize = 10;
 const IDX_CREATED_AT: usize = 11;
 const IDX_UPDATED_AT: usize = 12;
+const IDX_LINKED_FOLDERS: usize = 13;
 
 // 插入时使用的字段（不含 id）
 const INSERT_FIELDS: &[&str] = &[
     "name", "alias", "repo_url", "current_version", "latest_version",
     "asset_name", "install_path", "executable_path", "notes", "tags",
-    "created_at", "updated_at"
+    "created_at", "updated_at", "linked_folders"
 ];
 
 // 更新时使用的字段（不含 id 和 created_at）
 const UPDATE_FIELDS: &[&str] = &[
     "name", "alias", "repo_url", "current_version", "latest_version",
     "asset_name", "install_path", "executable_path", "notes", "tags",
-    "updated_at"
+    "updated_at", "linked_folders"
 ];
 
 // 从数据库行解析为 SoftwareEntry
 fn row_to_entry(row: &Row) -> Result<SoftwareEntry> {
     let tags_json: String = row.get(IDX_TAGS)?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    let linked_folders_json: Option<String> = row.get(IDX_LINKED_FOLDERS)?;
+    let linked_folders: Vec<crate::app::model::LinkedFolder> = linked_folders_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
     Ok(SoftwareEntry {
         id: row.get(IDX_ID)?,
         name: row.get(IDX_NAME)?,
@@ -57,6 +63,7 @@ fn row_to_entry(row: &Row) -> Result<SoftwareEntry> {
         executable_path: row.get(IDX_EXECUTABLE_PATH)?,
         notes: row.get(IDX_NOTES)?,
         tags,
+        linked_folders,
         created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(IDX_CREATED_AT)?)
             .map(|dt| dt.with_timezone(&Local))
             .unwrap_or_else(|_| Local::now()),
@@ -81,6 +88,7 @@ fn entry_to_insert_values(entry: &SoftwareEntry) -> Vec<Value> {
         serde_json::to_string(&entry.tags).unwrap_or_else(|_| "[]".to_string()).into(),
         entry.created_at.to_rfc3339().into(),
         entry.updated_at.to_rfc3339().into(),
+        serde_json::to_string(&entry.linked_folders).unwrap_or_else(|_| "[]".to_string()).into(),
     ]
 }
 
@@ -98,6 +106,7 @@ fn entry_to_update_values(entry: &SoftwareEntry) -> Vec<Value> {
         entry.notes.clone().into(),
         serde_json::to_string(&entry.tags).unwrap_or_else(|_| "[]".to_string()).into(),
         entry.updated_at.to_rfc3339().into(),
+        serde_json::to_string(&entry.linked_folders).unwrap_or_else(|_| "[]".to_string()).into(),
     ]
 }
 
@@ -140,6 +149,9 @@ pub fn init_db() -> Result<Connection> {
         )",
         [],
     )?;
+
+    // 为旧数据库添加 linked_folders 列（如果不存在）
+    let _ = conn.execute("ALTER TABLE software ADD COLUMN linked_folders TEXT", []);
 
     Ok(conn)
 }

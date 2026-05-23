@@ -456,6 +456,9 @@ impl eframe::App for MainWindow {
                     ui.group(|ui| {
                         ui.set_width(ui.available_width());
 
+                        // 判断是否配置了 Git 仓库地址
+                        let has_repo = !entry.repo_url.is_empty();
+
                         // 第一行：名称（带别名逻辑）+ 版本信息 + 操作按钮
                         ui.horizontal(|ui| {
                             if !entry.alias.is_empty() {
@@ -465,11 +468,14 @@ impl eframe::App for MainWindow {
                                 ui.heading(&entry.name);
                             }
 
-                            ui.label(format!("当前: {}", entry.current_version));
-                            if let Some(latest) = &entry.latest_version {
-                                ui.label(format!("最新: {}", latest));
-                                if latest != &entry.current_version {
-                                    ui.colored_label(egui::Color32::from_rgb(255, 180, 80), "有新版本!");
+                            // 只有配置了 Git 地址才显示版本信息
+                            if has_repo {
+                                ui.label(format!("当前: {}", entry.current_version));
+                                if let Some(latest) = &entry.latest_version {
+                                    ui.label(format!("最新: {}", latest));
+                                    if latest != &entry.current_version {
+                                        ui.colored_label(egui::Color32::from_rgb(255, 180, 80), "有新版本!");
+                                    }
                                 }
                             }
 
@@ -488,9 +494,29 @@ impl eframe::App for MainWindow {
                                 if ui.button("✏️ 编辑").clicked() {
                                     self.edit_dialog = Some(EditDialog::new(entry.clone()));
                                 }
-                                if ui.button("🌐 仓库").clicked() {
-                                    let _ = open::that(&entry.repo_url);
+                                // 路径按钮：如果 executable_path 存在且是文件，则显示
+                                if let Some(exe_path) = &entry.executable_path {
+                                    let p = std::path::Path::new(exe_path);
+                                    if p.is_file() {
+                                        if ui.button("📂 路径").clicked() {
+                                            if let Some(parent) = p.parent() {
+                                                let _ = open::that(parent);
+                                            }
+                                        }
+                                    }
                                 }
+                                // 只有配置了 Git 地址才显示仓库和检查更新按钮
+                                if has_repo {
+                                    if ui.button("🌐 仓库").clicked() {
+                                        let _ = open::that(&entry.repo_url);
+                                    }
+                                    if ui.button("🔄 检查更新").clicked() {
+                                        if let Some(id) = entry.id {
+                                            self.check_single_update(id, ctx);
+                                        }
+                                    }
+                                }
+                                // 打开按钮始终显示（在所有按钮的最左边）
                                 if ui.button("▶ 打开").clicked() {
                                     if let Some(path) = &entry.executable_path {
 										if path.ends_with(".bat") {
@@ -511,11 +537,6 @@ impl eframe::App for MainWindow {
 											let _ = open::that(&path);
 										}
                                     }
-                                }
-                                if ui.button("🔄 检查更新").clicked() {
-									if let Some(id) = entry.id {
-										self.check_single_update(id, ctx);
-									}
                                 }
                             });
                         });
